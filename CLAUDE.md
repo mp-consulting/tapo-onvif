@@ -139,7 +139,13 @@ Changes that touch the bridge pipeline aren't done until you've
 verified end-to-end on a real camera: stream is publishing in
 mediamtx (`grep "is publishing" tmp/mediamtx.log`), `ffprobe
 rtsp://…/<name>_<kind>` returns codec info, and the snapshot endpoint
-serves a non-empty JPEG. Type-checks and unit tests don't exist yet
-and aren't a substitute for that.
+serves a non-empty JPEG.
+
+The unit tests under `tests/` cover the config validator, `.env`
+loader, ONVIF SOAP handlers / UUID derivation, and the snapshot
+helpers — they catch regressions in the plumbing but say nothing
+about whether a real camera is still happy. Run them with
+`pytest -v` (deps: `pyyaml`, `pytest`); CI runs them on push and PR
+via [.github/workflows/ci.yml](.github/workflows/ci.yml).
 
 [pytapo]: https://pypi.org/project/pytapo/

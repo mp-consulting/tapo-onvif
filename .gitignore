@@ -12,6 +12,7 @@ __pycache__/
 .venv/
 venv/
 .python-version
+.pytest_cache/
 
 # editor / OS
 .DS_Store
