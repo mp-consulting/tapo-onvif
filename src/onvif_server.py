@@ -12,6 +12,7 @@ C675D becomes two ONVIF endpoints on two ports; N cams × M lenses = N*M ports.
 Replaces daniela-hase/onvif-server (Node.js + soap@1.1.5) which crashed on
 operations not in its WSDL stub.
 """
+import hashlib
 import http.server
 import socketserver
 import datetime
@@ -46,9 +47,16 @@ def _virtual_camera(cam: dict, lens: dict) -> dict:
     # Kept short (`<name>_<kind>`) — UniFi prepends the Manufacturer
     # ("TP-Link"), so a long Model string is doubly long in the UI.
     pretty = f"{cam['name']}_{lens['kind']}"
-    # Stable UUID derived from name+kind so it survives restarts.
+    # Stable UUID/SerialNumber derived from name+kind. Must be
+    # deterministic: UniFi derives an internal MAC from the SerialNumber,
+    # and homebridge-unifi-protect's `cameraOverrides[].mac` matches on
+    # that MAC. Python's builtin hash() is randomized per process
+    # (PYTHONHASHSEED), so using it here means the MAC changes on every
+    # bridge restart and overrides silently stop matching — symptom is
+    # HomeKit tiles working only for one lens because the user keeps
+    # adding new override entries to chase the moving MAC.
     seed = f"{cam['name']}_{lens['kind']}".encode()
-    h = abs(hash(seed))
+    h = int(hashlib.md5(seed).hexdigest(), 16)
     uuid = f"11111111-2222-3333-4444-{h % 10**12:012d}"
     return {
         "name": pretty,
