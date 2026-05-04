@@ -1,0 +1,43 @@
+# secrets
+.env
+.env.local
+
+# python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.python-version
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# logs / runtime artefacts
+*.log
+/tmp/
+
+# captures from reverse-engineering (don't publish these)
+*.pklg
+*.ipa
+*.xapk
+*.apk
+*.dex
+filtered_domains_*/
+filtered_domains_*.zip
+log/
+keychain_extract/
+ipa_extract/
+apk_unzipped/
+xapk_extract/
+tapo_app_extract/
+scrypted-data/
+__macosx/
+
+# bytecode build outputs from RE work
+*.class
+
+# project-local notes you may not want public
+notes/
