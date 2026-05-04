@@ -1,6 +1,9 @@
 # secrets
 .env
-.env.local
+.env.*
+
+# personal config (keep .example / .template siblings tracked)
+config/*.yml
 
 # python
 __pycache__/
