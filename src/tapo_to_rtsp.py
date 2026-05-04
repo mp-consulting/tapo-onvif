@@ -197,15 +197,52 @@ async def amain(tapo):
         except Exception:
             return False
 
+    # When pytapo's StreamingMediaSession sees no chunks for
+    # `no_data_timeout` (default 10 s), its `transceive()` async-iterator
+    # exits and `_stream_to_ffmpeg()` returns — the stream_task is "done"
+    # and the watchdog used to trip immediately. On a battery C675D this
+    # fires every ~10 min (the cam goes to local-power standby), so the
+    # whole stack was restarting every 10 min — visible to UniFi as a
+    # ~50 s outage per cycle.
+    #
+    # `_stream_to_ffmpeg` re-fetches a fresh mediaSession via
+    # tapo.getMediaSession() on each call, so we can re-arm just that
+    # task without disturbing ffmpeg / mediamtx / RTSP readers. Bound
+    # the in-process retries so a genuinely dead cam (cloud auth gone,
+    # cam unplugged, etc.) still falls back to the documented
+    # exit-and-let-launchd-restart path.
+    PYTAPO_RESET_LIMIT    = 5
+    PYTAPO_RESET_WINDOW_S = 600
+
     async def watchdog():
-        start_time = time.monotonic()
+        start_time   = time.monotonic()
         last_publish = None
+        pytapo_resets: list[float] = []
         STARTUP_GRACE = 60
         STALL_LIMIT   = 30
         while not stop.is_set():
             await asyncio.sleep(5)
             if streamer.stream_task and streamer.stream_task.done():
-                log.error("cam stream task ended — restart"); stop.set(); return
+                now = time.monotonic()
+                pytapo_resets[:] = [t for t in pytapo_resets
+                                    if now - t < PYTAPO_RESET_WINDOW_S]
+                if len(pytapo_resets) >= PYTAPO_RESET_LIMIT:
+                    log.error(f"pytapo session ended {PYTAPO_RESET_LIMIT}+ "
+                              f"times in {PYTAPO_RESET_WINDOW_S}s — falling "
+                              f"back to full restart")
+                    stop.set(); return
+                pytapo_resets.append(now)
+                log.warning(f"pytapo session ended (cam standby?) — "
+                            f"reconnecting in-place "
+                            f"(retry {len(pytapo_resets)}/{PYTAPO_RESET_LIMIT})")
+                try:
+                    streamer.running = True
+                    streamer.stream_task = asyncio.create_task(
+                        streamer._stream_to_ffmpeg())
+                except Exception as e:
+                    log.error(f"in-place reconnect raised: {e!r} — restart")
+                    stop.set(); return
+                continue
             if streamer.streamProcess and streamer.streamProcess.returncode is not None:
                 log.error(f"ffmpeg exited rc={streamer.streamProcess.returncode}"); stop.set(); return
             if await is_publishing():
