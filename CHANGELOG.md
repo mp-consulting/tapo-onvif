@@ -1,0 +1,62 @@
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+- Multi-camera support via `config/cameras.yml` (one entry per Tapo
+  camera; lens layout derived from `model`).
+- `src/_cameras.py` — camera-config loader and validator (rejects
+  duplicate names, missing/extra lens kinds, port collisions).
+- `src/_env.py` — shared `.env` loader used by every Python entrypoint.
+- `config/cameras.yml.example` template; `install.sh` copies it on
+  first run alongside `.env`.
+- `config/mediamtx.yml.template` rendered to `tmp/mediamtx.yml` at
+  startup with `READ_USER` / `READ_PASS` substituted from `.env`.
+- Separate `READ_USER` / `READ_PASS` env vars for LAN-facing RTSP/ONVIF
+  read credentials, distinct from the loopback-only `publish/publish`
+  publish credentials.
+- `CLAUDE.md` orientation document for AI/agent contributors.
+- `CHANGELOG.md` (this file).
+
+### Changed
+- `src/tapo_to_rtsp.py` now takes `--camera <name>` and runs one
+  process per camera; `run_bridge.sh` enumerates cameras from
+  `cameras.yml` and spawns a bridge for each.
+- `src/snapshot_server.py` and `src/onvif_server.py` iterate over every
+  (camera, lens) pair from `cameras.yml`; ONVIF endpoints are spawned
+  per lens on the port declared under `onvif_ports.<kind>`.
+- Stream paths are now derived from camera name + lens kind
+  (`<name>_<kind>`) instead of the hardcoded `c675d_wide` / `c675d_tele`.
+- Snapshot HTTP routes follow the same scheme: `/<name>_<kind>`.
+- README rewritten around the multi-camera workflow and the
+  `.env` / `cameras.yml` split.
+
+### Removed
+- Tracked `config/mediamtx.yml` (now generated at startup from
+  `mediamtx.yml.template` into `tmp/mediamtx.yml`, gitignored).
+- Single-camera env vars `CAM_IP`, `ONVIF_WIDE_PORT`, `ONVIF_TELE_PORT`
+  (replaced by per-camera entries in `cameras.yml`).
+
+### Security
+- `.gitignore` excludes `config/*.yml` so `config/cameras.yml` (which
+  contains LAN IPs) is not accidentally committed; the
+  `.example` / `.template` siblings remain tracked.
+- Generated `tmp/mediamtx.yml` written with `0600` permissions because
+  it contains the substituted `READ_PASS`.
+
+## [0.1.0] - 2026-05-04
+
+### Added
+- Initial release. Single-camera C675D bridge: pytapo Streamd → ffmpeg
+  HEVC→H.264 → mediamtx RTSP, hand-written ONVIF Profile-S server,
+  HTTP JPEG snapshot server, watchdog with launchd-driven restart.
+- `docs/` with reverse-engineering notes (BCCP protocol, keychain
+  search, PacketLogger capture).
+
+[Unreleased]: https://github.com/<you>/tapo-bridge/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/<you>/tapo-bridge/releases/tag/v0.1.0
