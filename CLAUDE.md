@@ -62,13 +62,26 @@ settings* section.
 
 - **Encoder flags in `tapo_to_rtsp.py`** are exactly what UniFi
   Protect's third-party adoption accepts. Downscaling, `libx264`
-  baseline, `dump_extra` bsf, real cam-mic audio — all tried, all
-  broke at least one client. If adoption stops working after a
-  change, revert.
-- **Silent AAC track**: the cam *does* emit real mu-law audio via
-  pytapo's side-channel pipe, but feeding it into the same ffmpeg
-  process stalls the muxer waiting for sync timestamps. Don't add it
-  back without a separate-process / RTP-mux design.
+  baseline, `dump_extra` bsf — all tried, all broke at least one
+  client. If adoption stops working after a change, revert.
+- **Silent AAC track**: real cam-mic audio in the published streams is
+  a known-incomplete feature. Two paths have been tried and don't work
+  unmodified:
+    - **pytapo's `includeAudio=True` side-channel** delivers near-zero
+      audio bytes — the session loop calls `tsReader.getPacket()` once
+      per response, but each response can carry multiple complete PES
+      packets (audio + video); all but the first are discarded when
+      `setBuffer()` overwrites the buffer next iteration. Confirmed
+      empirically with `audio recv 0.0 KiB` throughput logging.
+    - **`-c:a:0 pcm_mulaw …` input override on the MPEG-TS** (audio is
+      in there at stream type 0x91, which the cam mis-declares as MP3)
+      caused ffmpeg to crash at startup in our test, and the cam
+      session got stuck for minutes afterwards — treat with care.
+      May need a different override syntax or a pre-demux fixup of the
+      PMT before handing to ffmpeg.
+  Reasonable next steps: fork pytapo to drain `getPacket()` in a loop
+  per response, or write a tiny MPEG-TS PMT-rewriter that fixes
+  stream-type 0x91 to a codec ffmpeg recognises before piping.
 - **mediamtx `publish` user is loopback-only** by IP allowlist (in
   `config/mediamtx.yml.template`). `RTSP_HOST` must stay on
   `127.0.0.1` for the bridge to publish; pointing it at the LAN IP
@@ -125,7 +138,7 @@ Everything generated at runtime lives under `tmp/` (gitignored):
 Changes that touch the bridge pipeline aren't done until you've
 verified end-to-end on a real camera: stream is publishing in
 mediamtx (`grep "is publishing" tmp/mediamtx.log`), `ffprobe
-rtsp://…/<name>_wide` returns codec info, and the snapshot endpoint
+rtsp://…/<name>_<kind>` returns codec info, and the snapshot endpoint
 serves a non-empty JPEG. Type-checks and unit tests don't exist yet
 and aren't a substitute for that.
 

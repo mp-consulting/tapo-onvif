@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Tapo → RTSP bridge (one camera per process).
 
-Pulls HEVC video from a Tapo camera over its proprietary Streamd protocol
-(port 8800, HTTP-Digest + AES multipart MPEG-TS), transcodes to H.264 via
-Apple Silicon's videotoolbox, publishes the camera's lens(es) as RTSP to
-a local mediamtx server.
+Pulls HEVC video from a Tapo camera over its proprietary Streamd
+protocol (port 8800, HTTP-Digest + AES multipart MPEG-TS), transcodes
+to H.264 via Apple Silicon's videotoolbox, publishes the camera's
+lens(es) as RTSP to a local mediamtx server. A synthetic silent AAC
+track is added per output to keep HomeKit/fmp4 muxers happy — real
+cam-mic audio is a TODO (see CLAUDE.md "Don't break these" for what
+has been tried).
 
 Today only the C675D model is implemented end-to-end (dual-lens: wide
 + tele). Other models recognized in cameras.yml will need their own
@@ -89,9 +92,12 @@ async def amain(tapo):
 
     class RTSPStreamer(Streamer):
         """ffmpeg with two RTSP outputs (one per lens), silent AAC track,
-        videotoolbox HW encoder. The cam emits real mu-law audio via
-        pytapo's side-channel pipe but wiring it through ffmpeg breaks
-        the muxer — silent AAC keeps HomeKit/fmp4 muxers happy."""
+        videotoolbox HW encoder. The cam emits real μ-law audio inside
+        the same MPEG-TS but ffmpeg mis-detects it as MP3 (cam declares
+        stream type 0x91); pytapo's audio side-channel only delivers a
+        fraction of the audio packets. Real cam audio is a TODO; for
+        now we keep a synthetic silent AAC so HomeKit/fmp4 muxers
+        don't choke."""
         async def start(self):
             self.currentAction = "FFMpeg Starting"
             video_opts = [

@@ -185,12 +185,19 @@ accepts. Every "improvement" we tried (downscale to 1080p, libx264
 baseline, dump_extra bsf, real cam-mic audio) broke playback in some
 client. **If you change them and adoption stops working, revert.**
 
-The cam emits **real mu-law 16 kHz audio** via pytapo's side-channel
-pipe (the Tapo app plays it just fine), but wiring it into ffmpeg
-breaks the muxer — ffmpeg's HEVC decoder errors on POC reference
-frames during stream startup, and the two-input muxer waits
-indefinitely for both inputs to produce sync timestamps. Synthetic
-silent AAC keeps HomeKit/fmp4 muxers happy without that stall.
+The cam emits **real μ-law audio** packed inside the same MPEG-TS
+container that carries the video, declared at MPEG-TS stream type
+0x91 (which is normally MP3 in the MPEG-TS spec but TP-Link uses
+non-standardly for G.711 μ-law). Two approaches have been tried and
+neither shipped:
+1. Pytapo's `includeAudio=True` side-channel — pytapo's session loop
+   only returns one PES per response, dropping most audio packets.
+2. `-c:a:0 pcm_mulaw …` input override on the MPEG-TS — ffmpeg
+   crashed at startup and the cam session got stuck for minutes
+   afterward; needs a different override syntax or a PMT pre-rewrite.
+
+A synthetic silent AAC track is what currently keeps HomeKit/fmp4
+muxers happy. Real audio is a TODO.
 
 Other Tapo models will need their own pipeline branch — some are
 already H.264 at the source (no transcode needed), some are 2K, etc.
@@ -274,8 +281,11 @@ multi-stream profiles.
   the **mobile app** or open Protect via the local console IP.
 - **Native HomeKit via UniFi**: Ubiquiti only exposes their OWN cameras
   to HomeKit Secure Video. Route through Scrypted/Homebridge for HKSV.
-- **Cam mic audio**: silent AAC is a workaround; real mic audio needs
-  a custom RTP muxer that bypasses ffmpeg.
+- **Cam mic audio**: silent AAC is a workaround. The cam packs μ-law
+  audio inside the same MPEG-TS as video at stream type 0x91, but
+  pytapo's side-channel drops most of it and a direct ffmpeg codec
+  override crashed the muxer in our test. See *Encoder settings*
+  for what's been tried and what's left.
 - **ONVIF WS-Discovery (UDP 3702)**: not implemented. ONVIF clients
   that rely purely on multicast probe won't auto-discover — give them
   the IP+port manually via Advanced Adoption.

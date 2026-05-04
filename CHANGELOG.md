@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Investigated (not shipped)
+- **Real cam-mic audio in the published RTSP streams.** Two approaches
+  prototyped on the `feat/audio-support` branch and reverted:
+  1. *Split-process via pytapo's `includeAudio=True` side-channel.*
+     Throughput logging showed `audio recv 0.0 KiB` end-to-end —
+     pytapo's session loop only returns one PES per response and
+     overwrites the buffer next iteration, silently dropping most
+     audio packets.
+  2. *Single ffmpeg with `-c:a:0 pcm_mulaw` input override on the
+     MPEG-TS audio (declared at stream type 0x91, which standard
+     MPEG-TS assigns to MP3 but TP-Link uses for G.711 μ-law).*
+     ffmpeg crashed at startup; cam session got stuck for minutes
+     afterward.
+  Notes captured in CLAUDE.md / README. Likely-cleanest path forward
+  is a tiny MPEG-TS PMT-rewriter that fixes 0x91 to a recognised
+  codec (e.g. 0x90 PCMA-style or a proper PCMU descriptor) before
+  handing the bytes to ffmpeg. Until then: silent AAC remains.
+
+### Fixed
+- **ONVIF `Model` field** is now just the camera model (e.g. `C675D`)
+  instead of `Tapo<MODEL>-<name>-<kind>`. UniFi Protect's adoption UI
+  renders `<Manufacturer> <Model>`; the long form was hard to scan in
+  the device list. The friendly name (used in the ONVIF scope and the
+  per-(cam,lens) display name) is now `<name>_<kind>`.
+
 ### Changed
 - **Project renamed `tapo-bridge` → `tapo-onvif`.** The new name
   reflects what the project actually produces (ONVIF Profile-S
