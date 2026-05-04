@@ -83,22 +83,53 @@ def is_valid_jpeg(path: str) -> bool:
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
+    # HTTP/1.1 + Connection: close. UniFi Protect probes via HEAD before
+    # GET; the BaseHTTPRequestHandler default (HTTP/1.0, only do_GET)
+    # returns 501 for HEAD which UniFi treats as fatal — no snapshot.
+    protocol_version = "HTTP/1.1"
+
+    def _resolve(self):
         path = self.path.lstrip("/").split("?", 1)[0]
         out_path = STREAMS.get(path)
         if not out_path:
-            self.send_response(404); self.end_headers(); return
+            return None, 404
         if not os.path.exists(out_path) or not is_valid_jpeg(out_path):
-            self.send_response(503); self.end_headers(); return
+            return None, 503
+        return out_path, 200
+
+    def do_HEAD(self):
+        out_path, status = self._resolve()
+        if status != 200:
+            self.send_response(status); self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close"); self.end_headers(); return
+        try:
+            size = os.path.getsize(out_path)
+        except OSError:
+            self.send_response(503); self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close"); self.end_headers(); return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(size))
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+    def do_GET(self):
+        out_path, status = self._resolve()
+        if status != 200:
+            self.send_response(status); self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close"); self.end_headers(); return
         try:
             with open(out_path, "rb") as f:
                 jpg = f.read()
         except Exception:
-            self.send_response(503); self.end_headers(); return
+            self.send_response(503); self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close"); self.end_headers(); return
         self.send_response(200)
         self.send_header("Content-Type", "image/jpeg")
         self.send_header("Content-Length", str(len(jpg)))
         self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(jpg)
 
