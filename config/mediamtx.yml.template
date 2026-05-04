@@ -1,0 +1,33 @@
+logLevel: info
+# 8555 instead of default 8554 because qemu/Android-emulator squats on
+# 127.0.0.1:8554 if you ever ran one.
+rtspAddress: :8555
+rtmpAddress: :1936
+hlsAddress: :8889
+webrtcAddress: :8890
+srtAddress: :8891
+
+# Two users:
+#   publish/publish — loopback-only, the bridge pushes RTSP via 127.0.0.1.
+#                     Hardcoded because the IP restriction makes it
+#                     unreachable from the LAN; not a real secret.
+#   __READ_USER__/__READ_PASS__ — substituted by run_bridge.sh from
+#                     READ_USER / READ_PASS in .env. This is what UniFi /
+#                     Scrypted / VLC use to pull the streams.
+# Rendered config lands in tmp/mediamtx.yml.
+authMethod: internal
+authInternalUsers:
+  - user: publish
+    pass: publish
+    ips: [127.0.0.1/32]
+    permissions:
+      - action: publish
+      - action: read     # snapshot_server + watchdog read via loopback
+  - user: __READ_USER__
+    pass: __READ_PASS__
+    permissions:
+      - action: read
+      - action: playback
+
+paths:
+  all_others: {}

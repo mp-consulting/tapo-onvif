@@ -1,0 +1,35 @@
+# One entry per Tapo camera. The `name` becomes the stream-path prefix
+# in mediamtx (e.g. `garden_wide`, `garden_tele` for a dual-lens C675D,
+# or `front_main` for a single-lens C200).
+#
+# Fields:
+#   name             alphanumeric + underscore. Stable identifier.
+#   model            determines lens layout. Today:
+#                       c675d   dual-lens (wide + tele)
+#                       c200    single-lens (main)
+#   ip               LAN IP of the camera.
+#   onvif_ports      map of lens-kind → ONVIF port. Required keys depend
+#                    on the model. Each port must be unique across all
+#                    cameras.
+#
+# Cloud-account credentials (CAM_USER / CAM_PASS) are shared across all
+# cameras and live in .env — they are the TP-Link account that owns
+# the cameras, not per-device.
+#
+# Note: only `c675d` is implemented end-to-end in tapo_to_rtsp.py at the
+# moment. Other models are recognized by the config layer / ONVIF /
+# snapshot servers but will need their own bridge code path.
+
+cameras:
+  - name: garden
+    model: c675d
+    ip: 192.168.1.101
+    onvif_ports:
+      wide: 8081
+      tele: 8082
+
+  # - name: front_door
+  #   model: c200
+  #   ip: 192.168.1.102
+  #   onvif_ports:
+  #     main: 8083

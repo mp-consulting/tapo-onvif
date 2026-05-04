@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  launchd template. Copy to ~/Library/LaunchAgents/com.tapo.bridge.plist
-  and edit the two paths to match your install location. Then:
+  launchd template. The placeholders __BRIDGE_DIR__ and __HOME__ are
+  substituted by `./install.sh launchd`, which also loads the agent.
+  Manual install:
+    sed -e "s|__BRIDGE_DIR__|$PWD|g" -e "s|__HOME__|$HOME|g" \
+      config/com.tapo.bridge.plist.example \
+      > ~/Library/LaunchAgents/com.tapo.bridge.plist
     launchctl load -w ~/Library/LaunchAgents/com.tapo.bridge.plist
 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -13,11 +17,11 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>/Users/YOU/tapo-bridge/src/run_bridge.sh</string>
+    <string>__BRIDGE_DIR__/src/run_bridge.sh</string>
   </array>
 
   <key>WorkingDirectory</key>
-  <string>/Users/YOU/tapo-bridge/src</string>
+  <string>__BRIDGE_DIR__/src</string>
 
   <key>RunAtLoad</key>
   <true/>
@@ -34,17 +38,17 @@
   <integer>10</integer>
 
   <key>StandardOutPath</key>
-  <string>/tmp/tapo-launchd.log</string>
+  <string>__BRIDGE_DIR__/tmp/tapo-launchd.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/tmp/tapo-launchd.err</string>
+  <string>__BRIDGE_DIR__/tmp/tapo-launchd.err</string>
 
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key>
-    <string>/Users/YOU</string>
+    <string>__HOME__</string>
   </dict>
 </dict>
 </plist>

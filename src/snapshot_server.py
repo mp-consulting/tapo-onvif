@@ -1,37 +1,30 @@
 #!/usr/bin/env python3
-"""HTTP server for JPEG snapshots of the C675D's two lenses.
+"""HTTP server for JPEG snapshots of every camera-lens defined in
+config/cameras.yml.
 
-Two long-running ffmpeg subprocesses (one per lens) atomically rewrite
-`/tmp/tapo_snaps/{wide,tele}.jpg` at 1 fps. The HTTP handler just serves
-the latest file. Files are written atomically (`.tmp` + rename) so the
+One long-running ffmpeg subprocess per (camera, lens) atomically rewrites
+`<SNAP_DIR>/<name>_<kind>.jpg` at 1 fps. The HTTP handler just serves the
+latest file. Files are written atomically (`.tmp` + rename) so the
 handler never sees a partial JPEG.
 
-Endpoints: /wide  /tele  /c675d_wide  /c675d_tele
+Endpoints: /<name>_<kind>   e.g. /maison_guest_wide
 """
 import http.server
 import socketserver
 import subprocess
+import sys
 import threading
 import time
 import os
 import signal
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from _env import load_dotenv
+from _cameras import load_cameras
 
-
-def load_dotenv(path: str) -> dict:
-    out: dict = {}
-    if not os.path.exists(path):
-        return out
-    for line in open(path):
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, v = line.split("=", 1)
-            out[k.strip()] = v.strip().strip('"').strip("'")
-    return out
-
-
-ENV = load_dotenv(os.path.join(HERE, ".env"))
+ENV  = load_dotenv(HERE)
+CAMS = load_cameras(HERE)
 PORT          = int(ENV.get("SNAPSHOT_PORT", "8683"))
 RTSP_HOST     = ENV.get("RTSP_HOST",      "127.0.0.1")
 RTSP_PORT     = int(ENV.get("RTSP_PORT",  "8555"))
@@ -41,8 +34,12 @@ SNAP_DIR      = ENV.get("SNAP_DIR",       "/tmp/tapo_snaps")
 FFMPEG_BIN    = ENV.get("FFMPEG_BIN",     "/opt/homebrew/bin/ffmpeg")
 
 RTSP_BASE = f"rtsp://{PUBLISH_USER}:{PUBLISH_PASS}@{RTSP_HOST}:{RTSP_PORT}"
-STREAMS = {"c675d_wide": os.path.join(SNAP_DIR, "wide.jpg"),
-           "c675d_tele": os.path.join(SNAP_DIR, "tele.jpg")}
+
+# stream_path → on-disk JPEG path
+STREAMS: dict[str, str] = {
+    lens["stream_path"]: os.path.join(SNAP_DIR, f"{lens['stream_path']}.jpg")
+    for cam in CAMS for lens in cam["lenses"]
+}
 
 os.makedirs(SNAP_DIR, exist_ok=True)
 _procs: dict[str, subprocess.Popen] = {}
@@ -51,10 +48,12 @@ _procs: dict[str, subprocess.Popen] = {}
 def start_ffmpeg(stream: str, out_path: str):
     cmd = [
         FFMPEG_BIN, "-loglevel", "error",
-        "-fflags", "nobuffer",
+        "-fflags", "nobuffer+discardcorrupt",
         "-rtsp_transport", "tcp",
+        "-skip_frame", "nokey",
         "-i", f"{RTSP_BASE}/{stream}",
-        "-vf", "scale=1280:720,fps=1",
+        "-an",
+        "-vf", "fps=1,scale=1280:720",
         "-q:v", "4",
         "-update", "1", "-y",
         "-atomic_writing", "1",
@@ -85,15 +84,10 @@ def is_valid_jpeg(path: str) -> bool:
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        path = self.path.lstrip("/").split("?", 1)[0].lower()
-        stream = {
-            "wide": "c675d_wide", "c675d_wide": "c675d_wide",
-            "tele": "c675d_tele", "c675d_tele": "c675d_tele",
-            "":     "c675d_wide",
-        }.get(path)
-        if not stream:
+        path = self.path.lstrip("/").split("?", 1)[0]
+        out_path = STREAMS.get(path)
+        if not out_path:
             self.send_response(404); self.end_headers(); return
-        out_path = STREAMS[stream]
         if not os.path.exists(out_path) or not is_valid_jpeg(out_path):
             self.send_response(503); self.end_headers(); return
         try:
@@ -131,5 +125,5 @@ if __name__ == "__main__":
     for _ in range(30):
         if any(is_valid_jpeg(p) for p in STREAMS.values()): break
         time.sleep(1)
-    print(f"snapshot server ready on :{PORT}", flush=True)
+    print(f"snapshot server ready on :{PORT}; streams: {sorted(STREAMS)}", flush=True)
     ThreadedHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

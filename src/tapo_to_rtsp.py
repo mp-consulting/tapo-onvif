@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
-"""Tapo C675D → RTSP bridge.
+"""Tapo → RTSP bridge (one camera per process).
 
-Pulls HEVC video from a Tapo C675D dual-lens battery cam over its
-proprietary Streamd protocol (port 8800, HTTP-Digest + AES multipart MPEG-TS),
-transcodes to H.264 via Apple Silicon's videotoolbox, publishes both lenses
-as RTSP to a local mediamtx server.
+Pulls HEVC video from a Tapo camera over its proprietary Streamd protocol
+(port 8800, HTTP-Digest + AES multipart MPEG-TS), transcodes to H.264 via
+Apple Silicon's videotoolbox, publishes the camera's lens(es) as RTSP to
+a local mediamtx server.
 
-Reads `.env` next to this file:
-    CAM_IP=192.168.x.x
-    CAM_USER=your.cloud@example.com
-    CAM_PASS=YourCloudPassword
-    PUBLISH_USER=publish
-    PUBLISH_PASS=publish
-    RTSP_HOST=127.0.0.1
-    RTSP_PORT=8555
+Today only the C675D model is implemented end-to-end (dual-lens: wide
++ tele). Other models recognized in cameras.yml will need their own
+ffmpeg pipeline here.
+
+Usage:
+    tapo_to_rtsp.py --camera <name>
+
+Config:
+    config/cameras.yml   per-camera IP, model, ONVIF ports
+    .env                 CAM_USER, CAM_PASS (shared TP-Link cloud account),
+                         PUBLISH_USER/PUBLISH_PASS, RTSP_HOST/RTSP_PORT
 """
+import argparse
 import asyncio
 import logging
 import os
@@ -23,28 +27,28 @@ import signal
 import subprocess
 import time
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from _env import load_dotenv
+from _cameras import load_cameras, find_camera
+
+
+def parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--camera", required=True,
+                   help="camera name (must match an entry in cameras.yml)")
+    return p.parse_args()
+
+
+ARGS = parse_args()
+CAM = find_camera(load_cameras(HERE), ARGS.camera)
+
+logging.basicConfig(level=logging.INFO,
+                    format=f"%(asctime)s %(levelname)s [{CAM['name']}] %(message)s")
 logging.getLogger("pytapo.media_stream.session").setLevel(logging.ERROR)
 log = logging.getLogger("tapo-rtsp")
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-
-
-def load_dotenv(path: str) -> dict:
-    out: dict = {}
-    if not os.path.exists(path):
-        return out
-    for line in open(path):
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, v = line.split("=", 1)
-            out[k.strip()] = v.strip().strip('"').strip("'")
-    return out
-
-
-# --- config from .env (with sane defaults) -------------------------------
-ENV = load_dotenv(os.path.join(HERE, ".env"))
-CAM_IP        = ENV.get("CAM_IP",        "192.168.1.100")
+ENV = load_dotenv(HERE)
 CAM_USER      = ENV.get("CAM_USER",      "")
 CAM_PASS      = ENV.get("CAM_PASS",      "")
 PUBLISH_USER  = ENV.get("PUBLISH_USER",  "publish")
@@ -57,24 +61,31 @@ if not CAM_PASS:
 if not CAM_USER:
     sys.exit("ERROR: .env missing CAM_USER (your TP-Link cloud email)")
 
+if CAM["model"] != "c675d":
+    sys.exit(f"ERROR: bridge only implements model 'c675d' today; "
+             f"camera {CAM['name']!r} is model {CAM['model']!r}.")
+
 RTSP_BASE = f"rtsp://{PUBLISH_USER}:{PUBLISH_PASS}@{RTSP_HOST}:{RTSP_PORT}"
-RTSP_WIDE = f"{RTSP_BASE}/c675d_wide"
-RTSP_TELE = f"{RTSP_BASE}/c675d_tele"
+RTSP_BY_KIND = {l["kind"]: f"{RTSP_BASE}/{l['stream_path']}" for l in CAM["lenses"]}
+WATCHDOG_PATH = CAM["lenses"][0]["stream_path"]
 
 
 def make_tapo():
     """Create the Tapo client synchronously — pytapo runs its own event
     loop for the auth handshake; mixing with asyncio.run() raises."""
     from pytapo import Tapo
-    log.info(f"connecting to {CAM_IP}…")
-    tapo = Tapo(CAM_IP, CAM_USER, CAM_PASS, cloudPassword=CAM_PASS)
+    log.info(f"connecting to {CAM['ip']}…")
+    tapo = Tapo(CAM["ip"], CAM_USER, CAM_PASS, cloudPassword=CAM_PASS)
     name = tapo.getBasicInfo()["device_info"]["basic_info"]["device_alias"]
-    log.info(f"cam: {name}")
+    log.info(f"cam alias on device: {name}")
     return tapo
 
 
 async def amain(tapo):
     from pytapo.media_stream.streamer import Streamer
+
+    rtsp_wide = RTSP_BY_KIND["wide"]
+    rtsp_tele = RTSP_BY_KIND["tele"]
 
     class RTSPStreamer(Streamer):
         """ffmpeg with two RTSP outputs (one per lens), silent AAC track,
@@ -102,9 +113,9 @@ async def amain(tapo):
                 "-f", "mpegts", "-i", "pipe:0",
                 "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
                 "-map", "0:v:0", "-map", "1:a:0",
-                *video_opts, *audio_opts, *rtsp_opts, RTSP_WIDE,
+                *video_opts, *audio_opts, *rtsp_opts, rtsp_wide,
                 "-map", "0:v:1", "-map", "1:a:0",
-                *video_opts, *audio_opts, *rtsp_opts, RTSP_TELE,
+                *video_opts, *audio_opts, *rtsp_opts, rtsp_tele,
             ]
             log.info(f"ffmpeg → {' '.join(cmd)}")
             self.streamProcess = await asyncio.create_subprocess_exec(
@@ -123,8 +134,8 @@ async def amain(tapo):
         logLevel="info", ff_args={}, logFunction=ff_log,
     )
     await streamer.start()
-    log.info(f"wide → {RTSP_WIDE}")
-    log.info(f"tele → {RTSP_TELE}")
+    log.info(f"wide → {rtsp_wide}")
+    log.info(f"tele → {rtsp_tele}")
 
     stop = asyncio.Event()
     asyncio.get_event_loop().add_signal_handler(signal.SIGINT, stop.set)
@@ -138,7 +149,7 @@ async def amain(tapo):
             import base64
             auth = base64.b64encode(f"{PUBLISH_USER}:{PUBLISH_PASS}".encode()).decode()
             writer.write(
-                f"DESCRIBE {RTSP_BASE}/c675d_wide RTSP/1.0\r\n"
+                f"DESCRIBE {RTSP_BASE}/{WATCHDOG_PATH} RTSP/1.0\r\n"
                 f"CSeq: 1\r\nAuthorization: Basic {auth}\r\n\r\n".encode())
             await writer.drain()
             line = await asyncio.wait_for(reader.readline(), timeout=2)

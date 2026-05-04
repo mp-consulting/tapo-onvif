@@ -1,71 +1,70 @@
 #!/usr/bin/env python3
-"""Minimal Python ONVIF Profile S server for the Tapo C675D bridge.
+"""Minimal Python ONVIF Profile S server for the Tapo bridge.
 
 Hand-written SOAP responses for the ~15 ONVIF operations that UniFi Protect,
 Scrypted, Homebridge, and generic ONVIF clients actually use. Returns proper
 SOAP faults for unknown operations (no HTTP 500 / TypeError).
 
-Replaces daniela-hase/onvif-server (Node.js + soap@1.1.5) which crashed with
-`TypeError: Cannot read properties of undefined (reading 'description')` on
-any operation not in its WSDL stub.
+One virtual ONVIF camera is served per (real-cam, lens) pair, on the port
+configured in cameras.yml under `onvif_ports.<kind>`. So a single dual-lens
+C675D becomes two ONVIF endpoints on two ports; N cams × M lenses = N*M ports.
 
-Two virtual ONVIF cameras are served (one per port):
-  http://<host>:8081/onvif/device_service     wide lens
-  http://<host>:8082/onvif/device_service     tele lens
-Each camera's media service is at /onvif/media_service on the same port.
+Replaces daniela-hase/onvif-server (Node.js + soap@1.1.5) which crashed on
+operations not in its WSDL stub.
 """
 import http.server
 import socketserver
 import datetime
 import os
 import re
+import sys
 import threading
 import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from _env import load_dotenv
+from _cameras import load_cameras
 
-
-def load_dotenv(path: str) -> dict:
-    out: dict = {}
-    if not os.path.exists(path):
-        return out
-    for line in open(path):
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, v = line.split("=", 1)
-            out[k.strip()] = v.strip().strip('"').strip("'")
-    return out
-
-
-ENV = load_dotenv(os.path.join(HERE, ".env"))
+ENV  = load_dotenv(HERE)
+CAMS = load_cameras(HERE)
 LISTEN_HOST    = ENV.get("ONVIF_LISTEN_HOST", "0.0.0.0")
 PUBLIC_HOST    = ENV.get("PUBLIC_HOST",       "127.0.0.1")  # MUST be reachable by clients
 RTSP_PORT      = int(ENV.get("RTSP_PORT",     "8555"))
 SNAP_PORT      = int(ENV.get("SNAPSHOT_PORT", "8683"))
-RTSP_USER      = ENV.get("PUBLISH_USER",      "publish")
-RTSP_PASS      = ENV.get("PUBLISH_PASS",      "publish")
-ONVIF_WIDE_PORT = int(ENV.get("ONVIF_WIDE_PORT", "8081"))
-ONVIF_TELE_PORT = int(ENV.get("ONVIF_TELE_PORT", "8082"))
+RTSP_USER      = ENV.get("READ_USER",         "")
+RTSP_PASS      = ENV.get("READ_PASS",         "")
 
+if not RTSP_USER or not RTSP_PASS:
+    sys.exit("ERROR: .env missing READ_USER / READ_PASS — these are the "
+             "credentials advertised in the ONVIF/RTSP URL to UniFi etc.")
+
+
+def _virtual_camera(cam: dict, lens: dict) -> dict:
+    """Build the per-(cam,lens) ONVIF descriptor served on its own port."""
+    pretty = f"Tapo{cam['model'].upper()}-{cam['name']}-{lens['kind']}"
+    # Stable UUID derived from name+kind so it survives restarts.
+    seed = f"{cam['name']}_{lens['kind']}".encode()
+    h = abs(hash(seed))
+    uuid = f"11111111-2222-3333-4444-{h % 10**12:012d}"
+    return {
+        "name": pretty,
+        "uuid": uuid,
+        "snap_port": SNAP_PORT,
+        "profiles": [
+            {"token": "main_stream",
+             "name": lens["kind"].capitalize(),
+             "rtsp_path": "/" + lens["stream_path"],
+             "snap_path": lens["snap_path"],
+             "width": 1920, "height": 1080},
+        ],
+    }
+
+
+# port → virtual-camera descriptor
 CAMERAS = {
-    ONVIF_WIDE_PORT: {
-        "name": "TapoC675D-Wide",
-        "uuid": "11111111-2222-3333-4444-555555555551",
-        "snap_port": SNAP_PORT,
-        "profiles": [
-            {"token": "main_stream", "name": "Wide", "rtsp_path": "/c675d_wide",
-             "snap_path": "/wide", "width": 1920, "height": 1080},
-        ],
-    },
-    ONVIF_TELE_PORT: {
-        "name": "TapoC675D-Tele",
-        "uuid": "11111111-2222-3333-4444-555555555552",
-        "snap_port": SNAP_PORT,
-        "profiles": [
-            {"token": "main_stream", "name": "Tele", "rtsp_path": "/c675d_tele",
-             "snap_path": "/tele", "width": 1920, "height": 1080},
-        ],
-    },
+    lens["onvif_port"]: _virtual_camera(cam, lens)
+    for cam in CAMS for lens in cam["lenses"]
 }
 
 # --------------------------------------------------------------------------
@@ -240,7 +239,7 @@ def op_GetVideoSourceConfigurations(cam, body):
 <trt:Configurations token="VideoSrcConfig"><tt:Name>VideoSource</tt:Name>
 <tt:UseCount>2</tt:UseCount><tt:SourceToken>VideoSrc</tt:SourceToken>
 <tt:Bounds x="0" y="0" width="{p['width']}" height="{p['height']}"/>
-</tt:Configurations></trt:GetVideoSourceConfigurationsResponse>"""
+</trt:Configurations></trt:GetVideoSourceConfigurationsResponse>"""
 
 
 def op_GetStreamUri(cam, body):

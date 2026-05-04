@@ -4,6 +4,37 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
+PLIST_SRC="$HERE/config/com.tapo.bridge.plist.example"
+PLIST_DST="$HOME/Library/LaunchAgents/com.tapo.bridge.plist"
+
+install_launchd() {
+  [ -f "$PLIST_SRC" ] || { echo "missing $PLIST_SRC"; exit 1; }
+  mkdir -p "$(dirname "$PLIST_DST")"
+  if [ -f "$PLIST_DST" ]; then
+    echo "→ unloading existing $PLIST_DST"
+    launchctl unload "$PLIST_DST" 2>/dev/null || true
+  fi
+  echo "→ writing $PLIST_DST"
+  BRIDGE_DIR="$HERE" HOME_DIR="$HOME" python3 - "$PLIST_SRC" "$PLIST_DST" <<'PY'
+import os, sys
+src, dst = sys.argv[1], sys.argv[2]
+with open(src) as f:
+    rendered = f.read() \
+        .replace("__BRIDGE_DIR__", os.environ["BRIDGE_DIR"]) \
+        .replace("__HOME__", os.environ["HOME_DIR"])
+with open(dst, "w") as f:
+    f.write(rendered)
+PY
+  echo "→ launchctl load -w $PLIST_DST"
+  launchctl load -w "$PLIST_DST"
+  echo "✔ launchd agent loaded. Logs: $HERE/tmp/tapo-launchd.{log,err}"
+}
+
+if [ "${1:-}" = "launchd" ]; then
+  install_launchd
+  exit 0
+fi
+
 echo "→ checking prerequisites"
 command -v brew >/dev/null || {
   echo "Homebrew not found — install from https://brew.sh first"; exit 1; }
@@ -18,11 +49,16 @@ if [ ! -x "$VENV/bin/python" ]; then
   python3 -m venv "$VENV"
 fi
 "$VENV/bin/pip" install --quiet --upgrade pip
-"$VENV/bin/pip" install --quiet pytapo
+"$VENV/bin/pip" install --quiet pytapo pyyaml
 
-if [ ! -f "$HERE/src/.env" ]; then
-  echo "→ copying .env.example → src/.env (edit it before launching!)"
-  cp "$HERE/.env.example" "$HERE/src/.env"
+if [ ! -f "$HERE/src/.env" ] && [ ! -f "$HERE/.env" ]; then
+  echo "→ copying .env.example → .env (edit it before launching!)"
+  cp "$HERE/.env.example" "$HERE/.env"
+fi
+
+if [ ! -f "$HERE/config/cameras.yml" ]; then
+  echo "→ copying cameras.yml.example → cameras.yml (edit it before launching!)"
+  cp "$HERE/config/cameras.yml.example" "$HERE/config/cameras.yml"
 fi
 
 chmod +x "$HERE/src/run_bridge.sh"
@@ -36,10 +72,7 @@ Next steps:
   2. Test the bridge interactively:
        $HERE/src/run_bridge.sh
   3. To auto-start at login:
-       cp $HERE/config/com.tapo.bridge.plist.example \
-          ~/Library/LaunchAgents/com.tapo.bridge.plist
-       # edit ~/Library/LaunchAgents/com.tapo.bridge.plist — replace /Users/YOU
-       launchctl load -w ~/Library/LaunchAgents/com.tapo.bridge.plist
+       $HERE/install.sh launchd
 
 For Linux: drop the macOS h264_videotoolbox HW encoder for libx264, replace
 launchd with systemd. The python files are portable as-is.
