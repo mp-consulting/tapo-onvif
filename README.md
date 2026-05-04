@@ -71,7 +71,7 @@ flowchart LR
 ## Quick start (macOS)
 
 ```sh
-git clone https://github.com/<you>/tapo-onvif.git
+git clone https://github.com/mp-consulting/tapo-onvif.git
 cd tapo-onvif
 ./install.sh
 $EDITOR .env                 # CAM_USER, CAM_PASS, READ_USER, READ_PASS, PUBLIC_HOST
@@ -79,11 +79,21 @@ $EDITOR config/cameras.yml   # one entry per Tapo camera (IP, model, ONVIF ports
 src/run_bridge.sh            # foreground test
 ```
 
-Once everything is up, for a camera named `garden`:
-- VLC: `rtsp://<READ_USER>:<READ_PASS>@<this-host>:8555/garden_wide`
-- UniFi Protect *Advanced Adoption*: IP `<this-host>:8081`, user/pass `<READ_USER>` / `<READ_PASS>`
+Once everything is up, each lens of each camera gets its own RTSP
+stream, snapshot URL, and ONVIF endpoint. Stream paths are derived as
+`<name>_<kind>` — e.g. for a camera named `garden`:
+
+- C675D (dual-lens): `garden_wide`, `garden_tele`
+- Single-lens models (C200, C320WS, …): `garden_main`
+
+Pick the right `<kind>` for your model below:
+
+- VLC: `rtsp://<READ_USER>:<READ_PASS>@<this-host>:8555/<name>_<kind>`
+- UniFi Protect *Advanced Adoption*: IP `<this-host>:<onvif_port>` (the
+  port you set under `onvif_ports.<kind>` in `cameras.yml`), user/pass
+  `<READ_USER>` / `<READ_PASS>`
 - Scrypted: add the same RTSP URL via the RTSP plugin
-- Snapshot: `http://<this-host>:8683/garden_wide`
+- Snapshot: `http://<this-host>:8683/<name>_<kind>`
 
 For auto-start on macOS, see [config/com.tapo.onvif.plist.example](config/com.tapo.onvif.plist.example) and run
 `./install.sh launchd`.
