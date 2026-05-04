@@ -42,13 +42,17 @@ if not RTSP_USER or not RTSP_PASS:
 
 def _virtual_camera(cam: dict, lens: dict) -> dict:
     """Build the per-(cam,lens) ONVIF descriptor served on its own port."""
-    pretty = f"Tapo{cam['model'].upper()}-{cam['name']}-{lens['kind']}"
+    # Friendly name shown in UniFi/Scrypted before the user renames it.
+    # Kept short (`<name>_<kind>`) — UniFi prepends the Manufacturer
+    # ("TP-Link"), so a long Model string is doubly long in the UI.
+    pretty = f"{cam['name']}_{lens['kind']}"
     # Stable UUID derived from name+kind so it survives restarts.
     seed = f"{cam['name']}_{lens['kind']}".encode()
     h = abs(hash(seed))
     uuid = f"11111111-2222-3333-4444-{h % 10**12:012d}"
     return {
         "name": pretty,
+        "model": cam["model"].upper(),
         "uuid": uuid,
         "snap_port": SNAP_PORT,
         "profiles": [
@@ -152,7 +156,7 @@ def op_GetServiceCapabilities(cam, body):
 def op_GetDeviceInformation(cam, body):
     return f"""<tds:GetDeviceInformationResponse>
 <tds:Manufacturer>TP-Link</tds:Manufacturer>
-<tds:Model>{cam['name']}</tds:Model>
+<tds:Model>{cam['model']}</tds:Model>
 <tds:FirmwareVersion>1.1.2</tds:FirmwareVersion>
 <tds:SerialNumber>{cam['uuid']}</tds:SerialNumber>
 <tds:HardwareId>1.0</tds:HardwareId></tds:GetDeviceInformationResponse>"""
