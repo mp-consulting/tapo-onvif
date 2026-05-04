@@ -24,6 +24,16 @@ MEDIAMTX_TEMPLATE="${MEDIAMTX_TEMPLATE:-$HERE/../config/mediamtx.yml.template}"
 LOG_DIR="${LOG_DIR:-$HERE/../tmp}"
 mkdir -p "$LOG_DIR"
 
+# Preserve last-run logs as .prev before they get truncated by the
+# new round of `>` redirects below. Crucial for diagnosing why the
+# bridge died: the watchdog logs its trip-reason line just before
+# exit, and without this rotation that line is wiped on respawn.
+rotate() { [ -f "$1" ] && mv -f "$1" "$1.prev"; }
+rotate "$LOG_DIR/mediamtx.log"
+rotate "$LOG_DIR/snapshot.log"
+rotate "$LOG_DIR/onvif.log"
+for old in "$LOG_DIR"/tapo-onvif-*.log; do rotate "$old"; done
+
 # Render mediamtx config from template. _render_mediamtx.py reads .env
 # itself (no environ inheritance needed) and YAML-quotes substituted
 # values so passwords containing ':', '*', '&', '|', or single quotes
