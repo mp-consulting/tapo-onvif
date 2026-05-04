@@ -6,7 +6,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE"
 
 # Optional .env file lookup (search common locations)
-for f in "$HERE/.env" "$HERE/../.env" "$HOME/.config/tapo-bridge/.env"; do
+for f in "$HERE/.env" "$HERE/../.env" "$HOME/.config/tapo-onvif/.env"; do
   if [ -f "$f" ]; then
     set -a; . "$f"; set +a
     break
@@ -68,7 +68,7 @@ while IFS= read -r CAM; do
   [ -z "$FIRST_CAM" ] && FIRST_CAM="$CAM"
   echo "→ starting tapo bridge for $CAM"
   "$PYTHON_BIN" "$HERE/tapo_to_rtsp.py" --camera "$CAM" \
-    >"$LOG_DIR/tapo-bridge-$CAM.log" 2>&1 &
+    >"$LOG_DIR/tapo-onvif-$CAM.log" 2>&1 &
   PID=$!
   PIDS+=($PID)
   BRIDGE_PIDS+=($PID)

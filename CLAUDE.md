@@ -102,7 +102,7 @@ settings* section.
 | Path | Role |
 |---|---|
 | [src/_cameras.py](src/_cameras.py) | Camera-config schema lives here (`MODELS`, `_validate`). |
-| [src/_env.py](src/_env.py) | `.env` lookup order: `src/.env` → `./.env` → `~/.config/tapo-bridge/.env`. |
+| [src/_env.py](src/_env.py) | `.env` lookup order: `src/.env` → `./.env` → `~/.config/tapo-onvif/.env`. |
 | [src/tapo_to_rtsp.py](src/tapo_to_rtsp.py) | One bridge process per camera; subclasses pytapo's `Streamer`. |
 | [src/snapshot_server.py](src/snapshot_server.py) | One ffmpeg per (camera, lens), atomically rewriting `/tmp/tapo_snaps/<stream>.jpg` at 1 fps. |
 | [src/onvif_server.py](src/onvif_server.py) | Hand-written SOAP for the ~15 ONVIF ops UniFi/Scrypted actually call. |
@@ -115,7 +115,7 @@ settings* section.
 Everything generated at runtime lives under `tmp/` (gitignored):
 
 - `tmp/mediamtx.yml` — rendered config (`0600`, contains `READ_PASS`).
-- `tmp/mediamtx.log`, `tmp/tapo-bridge-<name>.log`, `tmp/snapshot.log`,
+- `tmp/mediamtx.log`, `tmp/tapo-onvif-<name>.log`, `tmp/snapshot.log`,
   `tmp/onvif.log`, `tmp/tapo-launchd.{log,err}` — per-component logs.
 - `/tmp/tapo_snaps/<stream>.jpg` — current JPEG per lens (note:
   this is the system `/tmp`, not the repo's `tmp/`).

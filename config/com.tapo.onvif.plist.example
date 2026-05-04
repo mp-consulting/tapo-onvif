@@ -4,15 +4,15 @@
   substituted by `./install.sh launchd`, which also loads the agent.
   Manual install:
     sed -e "s|__BRIDGE_DIR__|$PWD|g" -e "s|__HOME__|$HOME|g" \
-      config/com.tapo.bridge.plist.example \
-      > ~/Library/LaunchAgents/com.tapo.bridge.plist
-    launchctl load -w ~/Library/LaunchAgents/com.tapo.bridge.plist
+      config/com.tapo.onvif.plist.example \
+      > ~/Library/LaunchAgents/com.tapo.onvif.plist
+    launchctl load -w ~/Library/LaunchAgents/com.tapo.onvif.plist
 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.tapo.bridge</string>
+  <string>com.tapo.onvif</string>
 
   <key>ProgramArguments</key>
   <array>

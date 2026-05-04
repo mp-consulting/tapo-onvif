@@ -4,12 +4,19 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
-PLIST_SRC="$HERE/config/com.tapo.bridge.plist.example"
-PLIST_DST="$HOME/Library/LaunchAgents/com.tapo.bridge.plist"
+PLIST_SRC="$HERE/config/com.tapo.onvif.plist.example"
+PLIST_DST="$HOME/Library/LaunchAgents/com.tapo.onvif.plist"
+# Pre-rename plist label/path; install_launchd() unloads it if present.
+PLIST_DST_LEGACY="$HOME/Library/LaunchAgents/com.tapo.bridge.plist"
 
 install_launchd() {
   [ -f "$PLIST_SRC" ] || { echo "missing $PLIST_SRC"; exit 1; }
   mkdir -p "$(dirname "$PLIST_DST")"
+  if [ -f "$PLIST_DST_LEGACY" ]; then
+    echo "→ removing legacy $PLIST_DST_LEGACY"
+    launchctl unload "$PLIST_DST_LEGACY" 2>/dev/null || true
+    rm -f "$PLIST_DST_LEGACY"
+  fi
   if [ -f "$PLIST_DST" ]; then
     echo "→ unloading existing $PLIST_DST"
     launchctl unload "$PLIST_DST" 2>/dev/null || true

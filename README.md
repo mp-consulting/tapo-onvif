@@ -1,46 +1,78 @@
-# tapo-bridge
+# tapo-onvif
 
-A Mac-hosted bridge that pulls live HEVC video from **TP-Link Tapo C675D
-dual-lens battery cameras** over their proprietary Streamd protocol,
-transcodes to H.264, and re-publishes every lens as **RTSP** and as a
-**virtual ONVIF Profile-S camera** so they can be adopted by UniFi
-Protect, Scrypted, Homebridge, generic NVRs, etc.
+**Make TP-Link Tapo cameras adoptable by UniFi Protect.**
 
-The C675D has no native RTSP/ONVIF — it speaks an HTTPS-encrypted Streamd
-protocol that only the official Tapo apps and a few open-source clients
-([pytapo]) can decode. This bridge is the missing translation layer.
+UniFi Protect's *Advanced Adoption* will accept any RTSP/ONVIF
+Profile-S source — but Tapo cameras don't speak either. They use an
+HTTPS-encrypted "Streamd" protocol that only the official Tapo apps
+and a handful of open-source clients ([pytapo]) can decode. This
+bridge is the translation layer: it pulls the Streamd feed off each
+Tapo camera, transcodes when necessary, and re-publishes every lens
+as **RTSP** + a **virtual ONVIF Profile-S camera** that UniFi will
+adopt as if it were a native cam.
+
+Scrypted, Homebridge, VLC, and any other generic RTSP/ONVIF NVR work
+too — UniFi is just the design target because it's the strictest
+adopter of the bunch (specific encoder profile, ONVIF op coverage,
+loopback-only publish creds). If it works in UniFi, it works
+everywhere.
 
 Multiple cameras are supported: list them in [config/cameras.yml](config/cameras.yml.example),
-and the launcher spawns one bridge process per camera. Each lens (wide /
-tele on the C675D) becomes its own RTSP stream, snapshot endpoint, and
-ONVIF endpoint.
+and the launcher spawns one bridge process per camera. Each lens
+becomes its own RTSP stream, snapshot endpoint, and ONVIF endpoint
+(e.g. wide + tele for a dual-lens model, main for a single-lens one).
 
-```
-                        ┌── ffmpeg snapshot 1 ─► /tmp/tapo_snaps/<name>_wide.jpg ─┐
-                        │   (1 fps, atomic write, scale 1280×720)                │
-                        │                                                        │
-   cam :8800 (Streamd)  │   ┌───────────┐    ┌──────────┐                       │
-        │               │   │ mediamtx  │    │ Python   │                       │
-        │  pytapo       │   │  :8555    │    │ ONVIF    │   HTTP JPEG          │
-        │  HttpMedia-   ├──►│  (RTSP)   │    │ servers  │ ◄────────────────────┤
-        │  Session      │   │           │    │  one per │                       │
-        │               │   └─────▲─────┘    │   lens   │                       │
-        ▼               │         │          └─────┬────┘                       │
-  tapo_to_rtsp.py       │  ffmpeg │ RTSP push      │ GetStreamUri →             │
-   (one per camera) ────┘ (HEVC→H.264 + scale +    │ rtsp://…/<name>_<kind>     │
-                          silent AAC if no audio)  │                            │
-                                                   │ GetSnapshotUri →           │
-                                                   │ http://…:8683/<name>_<kind>│
-                        ┌── ffmpeg snapshot 2 ─► /tmp/tapo_snaps/<name>_tele.jpg ┘
-                        │
-                        └─► snapshot_server.py (HTTP :8683 → serves JPEGs)
+**Supported models today**
+- **C675D** — dual-lens battery (wide + tele). End-to-end pipeline
+  implemented and battle-tested.
+- *Other Tapo models* — config schema, ONVIF, and snapshot servers
+  treat them generically; only the camera→ffmpeg pipeline in
+  [src/tapo_to_rtsp.py](src/tapo_to_rtsp.py) is C675D-specific. Adding
+  another model is a localized change (see *Adding a model* below).
+
+> **Account caveat for battery cameras.** Battery models like the C675D
+> are bound to a single TP-Link cloud account and don't support
+> creating a separate Tapo sub-account or "shared user" you could
+> hand to the bridge — the device only authenticates the primary
+> owner. So `CAM_USER` / `CAM_PASS` in `.env` are your **real**
+> TP-Link cloud credentials. Treat the `.env` file accordingly: it's
+> already gitignored, but consider locking it down (`chmod 600`) and
+> using a dedicated TP-Link account that owns *only* the cameras you
+> want to bridge. Always-on cameras (C200, C320WS, C400, …) often
+> support shared/family accounts in the Tapo app and are safer in
+> that respect.
+
+```mermaid
+flowchart LR
+    subgraph LAN["LAN"]
+        cam["Tapo camera<br/>:8800 (Streamd, AES)"]
+        client["NVR / app<br/>(UniFi Protect,<br/>Scrypted, VLC, …)"]
+    end
+
+    subgraph host["Bridge host (Mac / Linux)"]
+        bridge["tapo_to_rtsp.py<br/>(one per camera)"]
+        ffmpeg["ffmpeg<br/>transcode + silent AAC"]
+        mediamtx["mediamtx<br/>RTSP :8555<br/>publish loopback-only"]
+        snap_ff["ffmpeg snapshot loops<br/>(1 fps, atomic JPEG)"]
+        snap_srv["snapshot_server.py<br/>HTTP :8683"]
+        onvif["onvif_server.py<br/>(SOAP, one HTTP server<br/>per lens, port from<br/>cameras.yml)"]
+    end
+
+    cam -- "pytapo HttpMediaSession<br/>(MPEG-TS / HEVC)" --> bridge
+    bridge -- "stdin pipe" --> ffmpeg
+    ffmpeg -- "RTSP push<br/>publish/publish@127.0.0.1" --> mediamtx
+    mediamtx -- "RTSP read<br/>READ_USER/READ_PASS" --> client
+    mediamtx -- "RTSP read<br/>(loopback)" --> snap_ff
+    snap_ff -- "/tmp/tapo_snaps/<name>_<kind>.jpg" --> snap_srv
+    snap_srv -- "HTTP JPEG" --> client
+    onvif -- "GetStreamUri →<br/>rtsp://…/<name>_<kind><br/>GetSnapshotUri →<br/>http://…:8683/<name>_<kind>" --> client
 ```
 
 ## Quick start (macOS)
 
 ```sh
-git clone https://github.com/<you>/tapo-bridge.git
-cd tapo-bridge
+git clone https://github.com/<you>/tapo-onvif.git
+cd tapo-onvif
 ./install.sh
 $EDITOR .env                 # CAM_USER, CAM_PASS, READ_USER, READ_PASS, PUBLIC_HOST
 $EDITOR config/cameras.yml   # one entry per Tapo camera (IP, model, ONVIF ports)
@@ -53,13 +85,13 @@ Once everything is up, for a camera named `garden`:
 - Scrypted: add the same RTSP URL via the RTSP plugin
 - Snapshot: `http://<this-host>:8683/garden_wide`
 
-For auto-start on macOS, see [config/com.tapo.bridge.plist.example](config/com.tapo.bridge.plist.example) and run
+For auto-start on macOS, see [config/com.tapo.onvif.plist.example](config/com.tapo.onvif.plist.example) and run
 `./install.sh launchd`.
 
 ## Layout
 
 ```
-tapo-bridge/
+tapo-onvif/
 ├── README.md
 ├── CHANGELOG.md
 ├── CLAUDE.md                 # orientation for AI/agent contributors
@@ -69,7 +101,7 @@ tapo-bridge/
 ├── config/
 │   ├── cameras.yml.example          # per-camera config template
 │   ├── mediamtx.yml.template        # rendered to tmp/mediamtx.yml at startup
-│   └── com.tapo.bridge.plist.example  # launchd template
+│   └── com.tapo.onvif.plist.example   # launchd template
 ├── src/
 │   ├── _env.py               # shared .env loader
 │   ├── _cameras.py           # cameras.yml loader + validator
@@ -127,16 +159,18 @@ whole file. The launcher rejects malformed configs at startup.
 Stream paths and snapshot routes are derived: `<name>_<kind>`, e.g.
 `garden_wide`, `garden_tele`. The snapshot server exposes `/<name>_<kind>`.
 
-## Encoder settings
+## Encoder settings (C675D pipeline)
 
-Inside [src/tapo_to_rtsp.py](src/tapo_to_rtsp.py), the working ffmpeg config is:
+The C675D source is HEVC; UniFi Protect won't ingest HEVC over its
+third-party-cam path, so we transcode to H.264. Inside
+[src/tapo_to_rtsp.py](src/tapo_to_rtsp.py), the working ffmpeg config is:
 
 ```
 -c:v h264_videotoolbox  -profile:v main  -b:v 3M -maxrate 4M -bufsize 6M
 -pix_fmt yuv420p  -g 30  +  silent AAC 48 kHz stereo
 ```
 
-These exact settings are what UniFi Protect's third-party adoption
+These exact settings are what UniFi Protect's *Advanced Adoption*
 accepts. Every "improvement" we tried (downscale to 1080p, libx264
 baseline, dump_extra bsf, real cam-mic audio) broke playback in some
 client. **If you change them and adoption stops working, revert.**
@@ -147,6 +181,38 @@ breaks the muxer — ffmpeg's HEVC decoder errors on POC reference
 frames during stream startup, and the two-input muxer waits
 indefinitely for both inputs to produce sync timestamps. Synthetic
 silent AAC keeps HomeKit/fmp4 muxers happy without that stall.
+
+Other Tapo models will need their own pipeline branch — some are
+already H.264 at the source (no transcode needed), some are 2K, etc.
+See *Adding a model* below.
+
+## Adding a model
+
+The framework is generic; only the camera→ffmpeg pipeline is
+model-specific. To add support for, say, a C200:
+
+1. **Lens layout** — add an entry to `MODELS` in [src/_cameras.py](src/_cameras.py):
+   ```python
+   MODELS = {
+       "c675d": ["wide", "tele"],
+       "c200":  ["main"],          # already present as a placeholder
+   }
+   ```
+   The keys here become the required keys under `onvif_ports` in
+   `cameras.yml`.
+2. **Pipeline** — branch on `CAM["model"]` in
+   [src/tapo_to_rtsp.py](src/tapo_to_rtsp.py) and build an ffmpeg
+   command for that model. If the source is already H.264, you can
+   often drop transcoding entirely (`-c:v copy`) and just remux.
+3. **Test against UniFi** — adoption is the canary. If UniFi Protect
+   won't adopt or the live tile stays black, the encoder profile is
+   wrong; widen the search from there to Scrypted / VLC.
+4. **Update `cameras.yml.example`** with a commented sample entry for
+   the new model.
+
+ONVIF and snapshot serving are model-agnostic — they iterate every
+(camera, lens) pair from `cameras.yml`, so they pick up new models
+for free.
 
 ## Watchdog & self-healing
 
@@ -167,15 +233,21 @@ account itself going stale.
 
 ## Adoption recipes
 
-### UniFi Protect (Advanced Adoption)
+### UniFi Protect (Advanced Adoption) — primary target
 *Devices → Add → Advanced Adoption*
-- IP Address: `<host>:8081` (wide) or `<host>:8082` (tele) — use the
-  ports you set under `onvif_ports` in `cameras.yml`
-- Username / Password: your `READ_USER` / `READ_PASS` from `.env`
+- IP Address: `<host>:<onvif_port>` — use the ports you set under
+  `onvif_ports` in `cameras.yml` (e.g. `8081` for `wide`, `8082` for
+  `tele` on a C675D — but the port numbers are entirely up to you).
+- Username / Password: your `READ_USER` / `READ_PASS` from `.env`.
+
+Each lens is adopted as a **separate** UniFi camera; that's how UniFi
+addresses single-stream sources, and it's why this bridge runs one
+ONVIF endpoint per (camera, lens) pair instead of trying to expose
+multi-stream profiles.
 
 ### Scrypted (RTSP plugin)
-- Add Camera → RTSP → Stream URL: `rtsp://<READ_USER>:<READ_PASS>@<host>:8555/<name>_wide`
-- Snapshot URL: `http://<host>:8683/<name>_wide`
+- Add Camera → RTSP → Stream URL: `rtsp://<READ_USER>:<READ_PASS>@<host>:8555/<name>_<kind>`
+- Snapshot URL: `http://<host>:8683/<name>_<kind>`
 - Then enable the HomeKit / UniFi Protect plugin to re-export elsewhere.
 
 ### Homebridge
@@ -201,6 +273,12 @@ account itself going stale.
   config layer / ONVIF / snapshot servers handle it, but
   [src/tapo_to_rtsp.py](src/tapo_to_rtsp.py) only implements the
   C675D pipeline today and will exit with an error for other models.
+  See *Adding a model* above.
+- **TP-Link cloud credentials**: battery models (C675D et al.) bind
+  to a single primary cloud account — there's no Tapo-app sub-account
+  / shared user you can dedicate to the bridge, so `CAM_USER`/`CAM_PASS`
+  are the real account creds. See the account caveat at the top of
+  this README.
 
 ## Reverse-engineering history
 

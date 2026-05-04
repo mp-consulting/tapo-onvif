@@ -31,7 +31,7 @@ MODELS = {
 def _config_path(here: str) -> str:
     for path in (
         os.path.join(here, "..", "config", "cameras.yml"),
-        os.path.expanduser("~/.config/tapo-bridge/cameras.yml"),
+        os.path.expanduser("~/.config/tapo-onvif/cameras.yml"),
     ):
         if os.path.exists(path):
             return path

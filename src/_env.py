@@ -10,7 +10,7 @@ def load_dotenv(here: str) -> dict:
     for path in (
         os.path.join(here, ".env"),
         os.path.join(here, "..", ".env"),
-        os.path.expanduser("~/.config/tapo-bridge/.env"),
+        os.path.expanduser("~/.config/tapo-onvif/.env"),
     ):
         if not os.path.exists(path):
             continue

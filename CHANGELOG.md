@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Project renamed `tapo-bridge` → `tapo-onvif`.** The new name
+  reflects what the project actually produces (ONVIF Profile-S
+  endpoints) and isn't pinned to a single NVR (UniFi remains the
+  primary integration target). All in-repo references, the launchd
+  plist label, and the XDG-style config dir lookups now use the new
+  name.
+
+  **Breaking for upgraders:**
+  - launchd plist label is now `com.tapo.onvif`. The new
+    `install.sh launchd` removes any previous `com.tapo.bridge`
+    plist before installing the new one.
+  - User-config dir lookup is now `~/.config/tapo-onvif/`
+    (previously `~/.config/tapo-bridge/`). If you used that path,
+    rename it.
+  - Per-camera log files in `tmp/` are now `tapo-onvif-<name>.log`
+    (previously `tapo-bridge-<name>.log`).
+
 ### Added
 - Multi-camera support via `config/cameras.yml` (one entry per Tapo
   camera; lens layout derived from `model`).
@@ -34,7 +52,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`<name>_<kind>`) instead of the hardcoded `c675d_wide` / `c675d_tele`.
 - Snapshot HTTP routes follow the same scheme: `/<name>_<kind>`.
 - README rewritten around the multi-camera workflow and the
-  `.env` / `cameras.yml` split.
+  `.env` / `cameras.yml` split. Reframed as a UniFi-first project
+  (UniFi Protect Advanced Adoption is the primary integration target;
+  other NVRs work via the same RTSP/ONVIF endpoints). Made the model
+  scope explicit (C675D fully implemented today; framework
+  model-agnostic) and added an *Adding a model* guide. Replaced the
+  ASCII architecture diagram with a Mermaid one. Documented the
+  account caveat for battery cameras (no Tapo-app sub-account, so
+  `CAM_USER`/`CAM_PASS` are the real account creds).
 
 ### Removed
 - Tracked `config/mediamtx.yml` (now generated at startup from
@@ -58,5 +83,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/` with reverse-engineering notes (BCCP protocol, keychain
   search, PacketLogger capture).
 
-[Unreleased]: https://github.com/<you>/tapo-bridge/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/<you>/tapo-bridge/releases/tag/v0.1.0
+[Unreleased]: https://github.com/<you>/tapo-onvif/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/<you>/tapo-onvif/releases/tag/v0.1.0
