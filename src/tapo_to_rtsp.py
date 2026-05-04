@@ -28,6 +28,7 @@ import os
 import sys
 import signal
 import subprocess
+import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -73,15 +74,45 @@ RTSP_BY_KIND = {l["kind"]: f"{RTSP_BASE}/{l['stream_path']}" for l in CAM["lense
 WATCHDOG_PATH = CAM["lenses"][0]["stream_path"]
 
 
+# Hard ceiling on the synchronous pytapo handshake. Sits comfortably
+# under the watchdog's 60 s STARTUP_GRACE (which only starts ticking
+# *after* asyncio.run is reached). Without this cap, a sleeping or
+# off-network battery cam wedges the bridge in pytapo's TLS handshake
+# indefinitely — TCP stays ESTABLISHED with no data, watchdog never
+# starts, launchd doesn't restart us, and mediamtx serves "no stream
+# available" forever. Exiting on timeout lets launchd respawn cleanly.
+HANDSHAKE_TIMEOUT_S = 30
+
+
 def make_tapo():
     """Create the Tapo client synchronously — pytapo runs its own event
-    loop for the auth handshake; mixing with asyncio.run() raises."""
+    loop for the auth handshake; mixing with asyncio.run() raises.
+
+    Bounded by HANDSHAKE_TIMEOUT_S: a hung handshake exits the
+    process so launchd restarts the stack instead of staying wedged."""
     from pytapo import Tapo
     log.info(f"connecting to {CAM['ip']}…")
-    tapo = Tapo(CAM["ip"], CAM_USER, CAM_PASS, cloudPassword=CAM_PASS)
-    name = tapo.getBasicInfo()["device_info"]["basic_info"]["device_alias"]
-    log.info(f"cam alias on device: {name}")
-    return tapo
+
+    box: dict = {}
+    def _connect():
+        try:
+            t = Tapo(CAM["ip"], CAM_USER, CAM_PASS, cloudPassword=CAM_PASS)
+            n = t.getBasicInfo()["device_info"]["basic_info"]["device_alias"]
+            box["tapo"], box["name"] = t, n
+        except Exception as e:
+            box["err"] = e
+
+    th = threading.Thread(target=_connect, daemon=True)
+    th.start()
+    th.join(HANDSHAKE_TIMEOUT_S)
+    if th.is_alive():
+        sys.exit(f"ERROR: pytapo handshake to {CAM['ip']} did not complete "
+                 f"within {HANDSHAKE_TIMEOUT_S}s — exiting so launchd "
+                 f"restarts (cam likely asleep or off-network).")
+    if "err" in box:
+        sys.exit(f"ERROR: pytapo handshake to {CAM['ip']} failed: {box['err']}")
+    log.info(f"cam alias on device: {box['name']}")
+    return box["tapo"]
 
 
 async def amain(tapo):
