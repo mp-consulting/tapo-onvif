@@ -97,40 +97,40 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return None, 503
         return out_path, 200
 
-    def do_HEAD(self):
-        out_path, status = self._resolve()
-        if status != 200:
-            self.send_response(status); self.send_header("Content-Length", "0")
-            self.send_header("Connection", "close"); self.end_headers(); return
-        try:
-            size = os.path.getsize(out_path)
-        except OSError:
-            self.send_response(503); self.send_header("Content-Length", "0")
-            self.send_header("Connection", "close"); self.end_headers(); return
+    def _send_empty(self, code: int):
+        self.send_response(code)
+        self.send_header("Content-Length", "0")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+    def _send_jpeg_headers(self, length: int):
         self.send_response(200)
         self.send_header("Content-Type", "image/jpeg")
-        self.send_header("Content-Length", str(size))
+        self.send_header("Content-Length", str(length))
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "close")
         self.end_headers()
 
+    def do_HEAD(self):
+        out_path, status = self._resolve()
+        if status != 200:
+            return self._send_empty(status)
+        try:
+            size = os.path.getsize(out_path)
+        except OSError:
+            return self._send_empty(503)
+        self._send_jpeg_headers(size)
+
     def do_GET(self):
         out_path, status = self._resolve()
         if status != 200:
-            self.send_response(status); self.send_header("Content-Length", "0")
-            self.send_header("Connection", "close"); self.end_headers(); return
+            return self._send_empty(status)
         try:
             with open(out_path, "rb") as f:
                 jpg = f.read()
         except Exception:
-            self.send_response(503); self.send_header("Content-Length", "0")
-            self.send_header("Connection", "close"); self.end_headers(); return
-        self.send_response(200)
-        self.send_header("Content-Type", "image/jpeg")
-        self.send_header("Content-Length", str(len(jpg)))
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "close")
-        self.end_headers()
+            return self._send_empty(503)
+        self._send_jpeg_headers(len(jpg))
         self.wfile.write(jpg)
 
     def log_message(self, *_a, **_k):

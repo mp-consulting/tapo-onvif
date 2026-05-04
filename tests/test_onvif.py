@@ -58,6 +58,44 @@ def test_parse_op_returns_empty_on_empty_body(server_modules):
     assert onvif.parse_op(body) == ""
 
 
+def test_parse_op_does_not_expand_internal_entities(server_modules):
+    """Regression for the billion-laughs class of attacks. The previous
+    implementation parsed untrusted XML with xml.etree.ElementTree,
+    whose docs explicitly warn it is not safe against malicious data.
+    The replacement uses regex, so an entity-bomb body must be handled
+    in O(n) without ever materialising the expansion."""
+    onvif, _ = server_modules
+    bomb = (
+        b'<?xml version="1.0"?>'
+        b'<!DOCTYPE root ['
+        b'<!ENTITY a "AAAAAAAAAA">'
+        b'<!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">'
+        b'<!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">'
+        b']>'
+        b'<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">'
+        b'<s:Body><tds:GetCapabilities xmlns:tds="x">&c;</tds:GetCapabilities>'
+        b'</s:Body></s:Envelope>'
+    )
+    # We only care that the dispatcher still returns the op tag without
+    # blowing up RAM/CPU. Body length is the literal payload — never
+    # the expanded form.
+    assert onvif.parse_op(bomb) == "GetCapabilities"
+
+
+def test_parse_op_only_returns_word_chars(server_modules):
+    """The op name is echoed in the SOAP fault for unknown ops without
+    XML escaping; if parse_op ever returned a value containing `<` or
+    `&` it would break the response. The regex is `\\w+` so this is
+    structurally guaranteed — pin it with a test."""
+    onvif, _ = server_modules
+    body = (
+        b'<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">'
+        b'<s:Body><foo>'        # opening tag
+    )
+    op = onvif.parse_op(body)
+    assert op == "" or op.replace("_", "").isalnum()
+
+
 # ---------------------------------------------------------------------------
 # _virtual_camera + UUID stability
 # ---------------------------------------------------------------------------
@@ -116,6 +154,24 @@ def test_virtual_camera_shape(server_modules):
     assert p["rtsp_path"] == "/garden_wide"
     assert p["snap_path"] == "/garden_wide"
     assert p["width"] == 1920 and p["height"] == 1080
+
+
+def test_select_profile_returns_first_when_no_token(server_modules):
+    onvif, _ = server_modules
+    cam = onvif.CAMERAS[8081]
+    assert onvif._select_profile(cam, b"") is cam["profiles"][0]
+
+
+def test_select_profile_falls_back_when_token_unknown(server_modules):
+    """User-supplied tokens that don't match any profile must NOT
+    cause a KeyError — fall back to the first profile, so handlers
+    can interpolate fields without escaping."""
+    onvif, _ = server_modules
+    cam = onvif.CAMERAS[8081]
+    body = (b'<s:Envelope xmlns:s="x"><s:Body><trt:GetProfile xmlns:trt="y">'
+            b'<trt:ProfileToken>does-not-exist</trt:ProfileToken>'
+            b'</trt:GetProfile></s:Body></s:Envelope>')
+    assert onvif._select_profile(cam, body) is cam["profiles"][0]
 
 
 def test_cameras_dict_is_keyed_by_onvif_port(server_modules):
@@ -278,6 +334,100 @@ def test_http_server_answers_get_device_information(server_modules):
         f"{SOAP_NS}Body/{TDS_NS}GetDeviceInformationResponse/"
         f"{TDS_NS}SerialNumber").text
     assert serial == cam["uuid"]
+
+
+def test_http_server_rejects_oversize_body(server_modules):
+    """Hostile clients can claim a huge Content-Length and force the
+    server to allocate megabytes per request. The handler must reject
+    anything over MAX_BODY_BYTES before reading."""
+    onvif, _ = server_modules
+    port = _free_port()
+    cam = onvif.CAMERAS[8081]
+    srv = onvif.ThreadedHTTPServer(("127.0.0.1", port), onvif.make_handler(cam))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        # Claim a length > MAX_BODY_BYTES; we don't need to actually
+        # send that many bytes — the handler must reject on the header.
+        oversize = onvif.MAX_BODY_BYTES + 1
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.putrequest("POST", "/onvif/device_service")
+        conn.putheader("Content-Type", "application/soap+xml")
+        conn.putheader("Content-Length", str(oversize))
+        conn.endheaders()
+        # Send a few bytes only; handler must close after the 413.
+        try:
+            conn.send(b"x" * 16)
+        except Exception:
+            pass
+        resp = conn.getresponse()
+        assert resp.status == 413
+        conn.close()
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_http_server_rejects_malformed_content_length(server_modules):
+    onvif, _ = server_modules
+    port = _free_port()
+    cam = onvif.CAMERAS[8081]
+    srv = onvif.ThreadedHTTPServer(("127.0.0.1", port), onvif.make_handler(cam))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        # Raw socket — http.client refuses to send non-numeric Content-Length.
+        s = socket.create_connection(("127.0.0.1", port), timeout=5)
+        s.sendall(
+            b"POST /onvif/device_service HTTP/1.1\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Content-Type: application/soap+xml\r\n"
+            b"Content-Length: not-a-number\r\n"
+            b"Connection: close\r\n\r\n"
+        )
+        # Read the status line.
+        data = b""
+        while b"\r\n" not in data:
+            chunk = s.recv(1024)
+            if not chunk:
+                break
+            data += chunk
+        s.close()
+        assert b" 400 " in data.split(b"\r\n", 1)[0]
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_http_server_does_not_leak_exception_text(server_modules, monkeypatch):
+    """A handler that crashes must not echo the exception's str() into
+    the SOAP fault body — it could expose paths or internal state."""
+    onvif, _ = server_modules
+
+    def boom(cam, body):
+        raise RuntimeError("/private/secret/path was missing")
+    monkeypatch.setitem(onvif.HANDLERS, "GetCapabilities", boom)
+
+    port = _free_port()
+    cam = onvif.CAMERAS[8081]
+    srv = onvif.ThreadedHTTPServer(("127.0.0.1", port), onvif.make_handler(cam))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        soap = (b'<?xml version="1.0"?>'
+                b'<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">'
+                b'<s:Body><tds:GetCapabilities xmlns:tds="http://www.onvif.org/ver10/device/wsdl"/>'
+                b'</s:Body></s:Envelope>')
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("POST", "/onvif/device_service", soap,
+                     {"Content-Type": "application/soap+xml"})
+        resp = conn.getresponse()
+        body = resp.read()
+        conn.close()
+        assert resp.status == 500
+        assert b"/private/secret/path" not in body
+        assert b"RuntimeError"          not in body
+        assert b"Internal error"        in body
+    finally:
+        srv.shutdown()
+        srv.server_close()
 
 
 def test_http_server_returns_soap_fault_for_unknown_op(server_modules):

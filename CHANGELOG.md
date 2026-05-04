@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **ONVIF SOAP parser hardened.** `parse_op` no longer feeds untrusted
+  request bytes to `xml.etree.ElementTree`, whose docs warn it is not
+  safe against malicious input (internal-entity expansion / "billion
+  laughs"). Replaced with a regex extractor — same behaviour, no XML
+  parser involved.
+- **ONVIF POST body capped at 64 KiB.** Previously the handler trusted
+  `Content-Length` and read the full body into memory; a hostile
+  client could pin RAM by claiming a huge length. Oversize requests
+  now return 413 before any read.
+- **Internal-error SOAP faults no longer echo the exception text.**
+  Previously `<s:Reason>` carried `f"Internal error: {e}"`, which
+  could leak file paths or other internals. Now logged server-side
+  via `logging.exception` and returned to the client as a generic
+  "Internal error".
+
+### Changed
+- `ProfileToken` lookup deduplicated into a single `_select_profile`
+  helper used by `op_GetProfile` / `op_GetStreamUri` / `op_GetSnapshotUri`.
+- Snapshot HTTP handler's error/header-emit branches deduplicated
+  into `_send_empty` / `_send_jpeg_headers` helpers.
+
+### Added
+- **Test suite under `tests/`** (61 tests): config validation,
+  `.env` loader semantics, ONVIF SOAP helpers + every registered
+  handler + the new security boundaries (entity-bomb, oversize body,
+  no-leak fault), snapshot helpers.
+- **GitHub Actions CI** ([.github/workflows/ci.yml](.github/workflows/ci.yml))
+  running `pytest` on Python 3.11 / 3.12 / 3.13 for every push and PR.
+
 ### Investigated (not shipped)
 - **Real cam-mic audio in the published RTSP streams.** Two approaches
   prototyped on the `feat/audio-support` branch and reverted:

@@ -16,11 +16,13 @@ import hashlib
 import http.server
 import socketserver
 import datetime
+import logging
 import os
 import re
 import sys
 import threading
-import xml.etree.ElementTree as ET
+
+log = logging.getLogger("tapo-onvif")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -39,6 +41,11 @@ RTSP_PASS      = ENV.get("READ_PASS",         "")
 if not RTSP_USER or not RTSP_PASS:
     sys.exit("ERROR: .env missing READ_USER / READ_PASS — these are the "
              "credentials advertised in the ONVIF/RTSP URL to UniFi etc.")
+
+# Hard cap on the SOAP request body. Real ONVIF requests are <1 KB;
+# anything larger is either misuse or an attempt to drive the parser
+# into pathological memory use. Reject before allocating.
+MAX_BODY_BYTES = 65536
 
 
 def _virtual_camera(cam: dict, lens: dict) -> dict:
@@ -102,14 +109,43 @@ def soap_fault(reason: str = "Method not implemented") -> bytes:
     )
 
 
+# Regex-only SOAP body inspection. Originally used xml.etree on the raw
+# request bytes, but Python's stdlib XML parser expands internal DTD
+# entities — i.e. a "billion laughs" payload could exhaust memory. We
+# only need the first child element name of soap:Body to dispatch, so
+# a regex skips the parser entirely. The capture is `\w+`, which means
+# the result is always safe to drop into the SOAP fault we echo back.
+_BODY_OPEN_RE = re.compile(rb"<(?:[\w.-]+:)?Body\b[^>]*>")
+_FIRST_CHILD_TAG_RE = re.compile(rb"<\s*(?:[\w.-]+:)?(\w+)")
+_PROFILE_TOKEN_RE = re.compile(
+    rb"<\s*(?:[\w.-]+:)?ProfileToken\s*>([^<]+)</\s*(?:[\w.-]+:)?ProfileToken\s*>"
+)
+
+
 def parse_op(body: bytes) -> str:
-    try:
-        root = ET.fromstring(body)
-        body_el = root.find("{http://www.w3.org/2003/05/soap-envelope}Body")
-        if body_el is None or len(body_el) == 0: return ""
-        return body_el[0].tag.split("}")[-1]
-    except Exception:
+    m = _BODY_OPEN_RE.search(body)
+    if not m:
         return ""
+    tag = _FIRST_CHILD_TAG_RE.match(body, m.end())
+    if tag is None:
+        # Try lstrip in case there's whitespace between <Body> and the op.
+        rest = body[m.end():].lstrip()
+        tag = _FIRST_CHILD_TAG_RE.match(rest)
+    return tag.group(1).decode("ascii", errors="replace") if tag else ""
+
+
+def _select_profile(cam: dict, body: bytes) -> dict:
+    """Return the profile referenced by <ProfileToken>…</ProfileToken>
+    in the request body, or the first profile if none/unknown. Always
+    returns a profile from `cam['profiles']` — never user-controlled
+    text — so callers can interpolate fields without escaping."""
+    m = _PROFILE_TOKEN_RE.search(body)
+    if m:
+        token = m.group(1).decode("ascii", errors="replace").strip()
+        for p in cam["profiles"]:
+            if p["token"] == token:
+                return p
+    return cam["profiles"][0]
 
 
 def now_utc(): return datetime.datetime.now(datetime.timezone.utc)
@@ -221,9 +257,7 @@ def op_GetProfiles(cam, body):
 
 
 def op_GetProfile(cam, body):
-    m = re.search(r"<\w*:?ProfileToken>([^<]+)</\w*:?ProfileToken>", body.decode("utf-8", errors="ignore"))
-    token = m.group(1) if m else cam["profiles"][0]["token"]
-    p = next((x for x in cam["profiles"] if x["token"] == token), cam["profiles"][0])
+    p = _select_profile(cam, body)
     return f"<trt:GetProfileResponse><trt:Profile fixed=\"true\" token=\"{p['token']}\"><tt:Name>{p['name']}</tt:Name></trt:Profile></trt:GetProfileResponse>"
 
 
@@ -255,9 +289,7 @@ def op_GetVideoSourceConfigurations(cam, body):
 
 
 def op_GetStreamUri(cam, body):
-    m = re.search(r"<\w*:?ProfileToken>([^<]+)</\w*:?ProfileToken>", body.decode("utf-8", errors="ignore"))
-    token = m.group(1) if m else cam["profiles"][0]["token"]
-    p = next((x for x in cam["profiles"] if x["token"] == token), cam["profiles"][0])
+    p = _select_profile(cam, body)
     uri = f"rtsp://{RTSP_USER}:{RTSP_PASS}@{PUBLIC_HOST}:{RTSP_PORT}{p['rtsp_path']}"
     return f"""<trt:GetStreamUriResponse><trt:MediaUri>
 <tt:Uri>{uri}</tt:Uri>
@@ -267,9 +299,7 @@ def op_GetStreamUri(cam, body):
 
 
 def op_GetSnapshotUri(cam, body):
-    m = re.search(r"<\w*:?ProfileToken>([^<]+)</\w*:?ProfileToken>", body.decode("utf-8", errors="ignore"))
-    token = m.group(1) if m else cam["profiles"][0]["token"]
-    p = next((x for x in cam["profiles"] if x["token"] == token), cam["profiles"][0])
+    p = _select_profile(cam, body)
     uri = f"http://{PUBLIC_HOST}:{cam['snap_port']}{p['snap_path']}"
     return f"""<trt:GetSnapshotUriResponse><trt:MediaUri>
 <tt:Uri>{uri}</tt:Uri>
@@ -308,19 +338,31 @@ def make_handler(cam):
         def do_POST(self):
             if not self.path.startswith("/onvif/"):
                 return self._send(404, b"")
-            length = int(self.headers.get("Content-Length", "0"))
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                return self._send(400, b"")
+            if length < 0 or length > MAX_BODY_BYTES:
+                # 413 Payload Too Large. Reject before reading so a
+                # hostile client can't pin RAM with a huge body.
+                return self._send(413, b"")
             body = self.rfile.read(length) if length else b""
             op = parse_op(body)
             handler = HANDLERS.get(op)
             if handler is None:
+                # `op` is matched by `\w+` in parse_op so it's safe to
+                # interpolate — no XML escaping needed.
                 resp = soap_fault(f"Operation '{op}' not supported")
                 code = 200
             else:
                 try:
                     resp = envelope(handler({**cam, "port": self.server.server_port}, body))
                     code = 200
-                except Exception as e:
-                    resp = soap_fault(f"Internal error: {e}")
+                except Exception:
+                    # Don't echo exception text to the client (could
+                    # leak paths, internals). Log it server-side.
+                    log.exception("ONVIF handler %s raised", op)
+                    resp = soap_fault("Internal error")
                     code = 500
             self._send(code, resp, "application/soap+xml; charset=utf-8")
 
