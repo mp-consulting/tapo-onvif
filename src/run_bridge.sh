@@ -5,10 +5,15 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE"
 
-# Optional .env file lookup (search common locations)
+# Optional .env file lookup (search common locations). Plain `.` (no
+# `set -a`) so secrets stay shell-local: if we exported them, every
+# child — mediamtx, ffmpeg, snapshot_server, onvif_server, and the
+# bridge processes — would inherit READ_PASS / CAM_PASS / PUBLISH_PASS
+# in its environment, where `ps -E` makes them readable to any same-uid
+# process. The Python servers read .env directly via src/_env.py.
 for f in "$HERE/.env" "$HERE/../.env" "$HOME/.config/tapo-onvif/.env"; do
   if [ -f "$f" ]; then
-    set -a; . "$f"; set +a
+    . "$f"
     break
   fi
 done
@@ -19,25 +24,14 @@ MEDIAMTX_TEMPLATE="${MEDIAMTX_TEMPLATE:-$HERE/../config/mediamtx.yml.template}"
 LOG_DIR="${LOG_DIR:-$HERE/../tmp}"
 mkdir -p "$LOG_DIR"
 
-# Render mediamtx config from template, substituting the external read
-# credentials from .env. mediamtx doesn't expand ${VAR} in auth fields,
-# so we do it ourselves. Python (not sed) so passwords containing
-# &, |, /, \ don't corrupt the substitution. The internal publish cred
-# stays hardcoded (loopback-only — see template).
+# Render mediamtx config from template. _render_mediamtx.py reads .env
+# itself (no environ inheritance needed) and YAML-quotes substituted
+# values so passwords containing ':', '*', '&', '|', or single quotes
+# don't break the config.
 MEDIAMTX_CONFIG="$LOG_DIR/mediamtx.yml"
 : "${READ_USER:?run_bridge.sh: READ_USER missing in .env}"
 : "${READ_PASS:?run_bridge.sh: READ_PASS missing in .env}"
-"$PYTHON_BIN" - "$MEDIAMTX_TEMPLATE" "$MEDIAMTX_CONFIG" <<'PY'
-import os, sys
-src, dst = sys.argv[1], sys.argv[2]
-with open(src) as f:
-    rendered = f.read() \
-        .replace("__READ_USER__", os.environ["READ_USER"]) \
-        .replace("__READ_PASS__", os.environ["READ_PASS"])
-with open(dst, "w") as f:
-    f.write(rendered)
-os.chmod(dst, 0o600)
-PY
+"$PYTHON_BIN" "$HERE/_render_mediamtx.py" "$MEDIAMTX_TEMPLATE" "$MEDIAMTX_CONFIG"
 
 # Enumerate cameras from cameras.yml. The python helper exits non-zero
 # with a clear error if the file is missing or malformed.
@@ -74,7 +68,7 @@ while IFS= read -r CAM; do
   BRIDGE_PIDS+=($PID)
 done <<< "$CAMS"
 
-echo "→ waiting for first cam stream to come up (~12 s)"
+echo "→ waiting for first cam stream to come up (up to 30 s)"
 for i in $(seq 1 30); do
   if grep -q "is publishing to path '${FIRST_CAM}_" "$LOG_DIR/mediamtx.log" 2>/dev/null; then
     break

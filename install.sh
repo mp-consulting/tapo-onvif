@@ -23,12 +23,14 @@ install_launchd() {
   fi
   echo "→ writing $PLIST_DST"
   BRIDGE_DIR="$HERE" HOME_DIR="$HOME" python3 - "$PLIST_SRC" "$PLIST_DST" <<'PY'
-import os, sys
+# XML-escape the substituted paths — a $HOME containing '&', '<', or
+# '>' would otherwise produce a malformed plist that launchctl rejects.
+import html, os, sys
 src, dst = sys.argv[1], sys.argv[2]
 with open(src) as f:
     rendered = f.read() \
-        .replace("__BRIDGE_DIR__", os.environ["BRIDGE_DIR"]) \
-        .replace("__HOME__", os.environ["HOME_DIR"])
+        .replace("__BRIDGE_DIR__", html.escape(os.environ["BRIDGE_DIR"])) \
+        .replace("__HOME__",       html.escape(os.environ["HOME_DIR"]))
 with open(dst, "w") as f:
     f.write(rendered)
 PY

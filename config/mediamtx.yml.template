@@ -11,10 +11,11 @@ srtAddress: :8891
 #   publish/publish — loopback-only, the bridge pushes RTSP via 127.0.0.1.
 #                     Hardcoded because the IP restriction makes it
 #                     unreachable from the LAN; not a real secret.
-#   __READ_USER__/__READ_PASS__ — substituted by run_bridge.sh from
-#                     READ_USER / READ_PASS in .env. This is what UniFi /
-#                     Scrypted / VLC use to pull the streams.
-# Rendered config lands in tmp/mediamtx.yml.
+#   READ_USER/READ_PASS (from .env) — substituted by src/_render_mediamtx.py
+#                     into the YAML-single-quoted slots below, so passwords
+#                     with ':', '*', '&', etc. don't corrupt the config.
+#                     UniFi / Scrypted / VLC use these creds to pull the
+#                     streams. Rendered output → tmp/mediamtx.yml (chmod 0600).
 authMethod: internal
 authInternalUsers:
   - user: publish
@@ -23,8 +24,8 @@ authInternalUsers:
     permissions:
       - action: publish
       - action: read     # snapshot_server + watchdog read via loopback
-  - user: __READ_USER__
-    pass: __READ_PASS__
+  - user: '__READ_USER__'
+    pass: '__READ_PASS__'
     permissions:
       - action: read
       - action: playback
