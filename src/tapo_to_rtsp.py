@@ -163,13 +163,43 @@ async def amain(tapo):
             if self.stream_task is None or self.stream_task.done():
                 self.stream_task = asyncio.create_task(self._stream_to_ffmpeg())
 
+        async def stop(self):
+            """Tear down so a fresh RTSPStreamer().start() gets a clean
+            ffmpeg + pipe. The base Streamer.stop() only sets
+            running=False — leaves stream_task and streamProcess alive,
+            and (critically) leaves the asyncio _UnixWritePipeTransport
+            in `_conn_lost` state if drain() ever errored, so subsequent
+            writes log "pipe closed by peer" and silently drop. We
+            cancel the task and terminate ffmpeg explicitly."""
+            self.running = False
+            t = self.stream_task
+            if t and not t.done():
+                t.cancel()
+                try: await t
+                except (asyncio.CancelledError, Exception): pass
+            p = self.streamProcess
+            if p and p.returncode is None:
+                try:
+                    p.terminate()
+                    try:
+                        await asyncio.wait_for(p.wait(), timeout=3)
+                    except asyncio.TimeoutError:
+                        p.kill()
+                        try: await p.wait()
+                        except Exception: pass
+                except ProcessLookupError:
+                    pass
+
     def ff_log(d):
         log.info(f"[ffmpeg] {d.get('ffmpegLog','')}")
 
-    streamer = RTSPStreamer(
-        tapo=tapo, quality="HD", includeAudio=False, mode="pipe",
-        logLevel="info", ff_args={}, logFunction=ff_log,
-    )
+    def make_streamer():
+        return RTSPStreamer(
+            tapo=tapo, quality="HD", includeAudio=False, mode="pipe",
+            logLevel="info", ff_args={}, logFunction=ff_log,
+        )
+
+    streamer = make_streamer()
     await streamer.start()
     log.info(f"wide → {rtsp_wide}")
     log.info(f"tele → {rtsp_tele}")
@@ -203,18 +233,26 @@ async def amain(tapo):
     # and the watchdog used to trip immediately. On a battery C675D this
     # fires every ~10 min (the cam goes to local-power standby), so the
     # whole stack was restarting every 10 min — visible to UniFi as a
-    # ~50 s outage per cycle.
+    # ~30-50 s outage per cycle.
     #
-    # `_stream_to_ffmpeg` re-fetches a fresh mediaSession via
-    # tapo.getMediaSession() on each call, so we can re-arm just that
-    # task without disturbing ffmpeg / mediamtx / RTSP readers. Bound
-    # the in-process retries so a genuinely dead cam (cloud auth gone,
-    # cam unplugged, etc.) still falls back to the documented
+    # We can't just re-arm `_stream_to_ffmpeg`: by the time pytapo
+    # declares the stream over, asyncio's _UnixWritePipeTransport for
+    # ffmpeg.stdin has usually entered `_conn_lost` state (because the
+    # final drain() saw a disconnect or 15 s timeout), so subsequent
+    # writes silently drop and log "pipe closed by peer" — verified
+    # empirically. We have to recreate the Streamer so a fresh ffmpeg
+    # subprocess gets a fresh stdin pipe. ffmpeg restart is ~3-5 s;
+    # mediamtx + onvif + snapshot stay up; UniFi reconnects within
+    # seconds — far better than the ~30 s full launchd restart cycle.
+    #
+    # Bound the recreates: a genuinely dead cam (cloud auth gone, cam
+    # unplugged, etc.) still falls back to the documented
     # exit-and-let-launchd-restart path.
     PYTAPO_RESET_LIMIT    = 5
     PYTAPO_RESET_WINDOW_S = 600
 
     async def watchdog():
+        nonlocal streamer
         start_time   = time.monotonic()
         last_publish = None
         pytapo_resets: list[float] = []
@@ -233,15 +271,23 @@ async def amain(tapo):
                     stop.set(); return
                 pytapo_resets.append(now)
                 log.warning(f"pytapo session ended (cam standby?) — "
-                            f"reconnecting in-place "
+                            f"recreating Streamer + ffmpeg "
                             f"(retry {len(pytapo_resets)}/{PYTAPO_RESET_LIMIT})")
                 try:
-                    streamer.running = True
-                    streamer.stream_task = asyncio.create_task(
-                        streamer._stream_to_ffmpeg())
+                    await asyncio.wait_for(streamer.stop(), timeout=5)
                 except Exception as e:
-                    log.error(f"in-place reconnect raised: {e!r} — restart")
+                    log.warning(f"old streamer.stop raised {e!r}; continuing")
+                try:
+                    streamer = make_streamer()
+                    await streamer.start()
+                    log.info("streamer recreated; fresh ffmpeg + pytapo session")
+                except Exception as e:
+                    log.error(f"streamer.start raised {e!r} — restart")
                     stop.set(); return
+                # Fresh ffmpeg needs the same grace as cold start before
+                # we trip on "not publishing".
+                last_publish = None
+                start_time   = time.monotonic()
                 continue
             if streamer.streamProcess and streamer.streamProcess.returncode is not None:
                 log.error(f"ffmpeg exited rc={streamer.streamProcess.returncode}"); stop.set(); return
