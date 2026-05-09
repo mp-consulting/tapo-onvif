@@ -18,7 +18,7 @@ for f in "$HERE/.env" "$HERE/../.env" "$HOME/.config/tapo-onvif/.env"; do
   fi
 done
 
-PYTHON_BIN="${PYTHON_BIN:-/tmp/tapo_venv/bin/python}"
+PYTHON_BIN="${PYTHON_BIN:-$HOME/Library/Application Support/tapo-onvif/venv/bin/python}"
 MEDIAMTX_BIN="${MEDIAMTX_BIN:-mediamtx}"
 MEDIAMTX_TEMPLATE="${MEDIAMTX_TEMPLATE:-$HERE/../config/mediamtx.yml.template}"
 LOG_DIR="${LOG_DIR:-$HERE/../tmp}"

@@ -52,7 +52,7 @@ echo "→ brew install ffmpeg mediamtx (skips if present)"
 brew list ffmpeg   >/dev/null 2>&1 || brew install ffmpeg
 brew list mediamtx >/dev/null 2>&1 || brew install mediamtx
 
-VENV="${VENV:-/tmp/tapo_venv}"
+VENV="${VENV:-$HOME/Library/Application Support/tapo-onvif/venv}"
 echo "→ python venv at $VENV"
 if [ ! -x "$VENV/bin/python" ]; then
   python3 -m venv "$VENV"

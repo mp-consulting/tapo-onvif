@@ -56,6 +56,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   handing the bytes to ffmpeg. Until then: silent AAC remains.
 
 ### Fixed
+- **Default venv moved off `/tmp`.** Previously `install.sh` and the
+  `PYTHON_BIN` defaults pointed at `/tmp/tapo_venv`. macOS's daily
+  `/etc/periodic/daily/110.clean-tmps` deletes files in `/tmp` older
+  than 3 days, which silently mangled the `pyyaml` install: the `.so`
+  binary and `dist-info` survived but the package's `.py` files were
+  removed, so `import yaml` succeeded as an empty namespace package
+  (`yaml.__file__` was `None`) and `yaml.safe_load` raised
+  `AttributeError`. Under launchd's `KeepAlive`/`ThrottleInterval=10s`
+  this turned into a silent 20-hour respawn loop. The default venv
+  location is now `~/Library/Application Support/tapo-onvif/venv`,
+  updated in `install.sh`, `.env.example`, and `src/run_bridge.sh`'s
+  fallback. Existing deployments should update `PYTHON_BIN` in their
+  `.env` (or rerun `install.sh`) and recreate the venv.
 - **ONVIF `Model` field** is now just the camera model (e.g. `C675D`)
   instead of `Tapo<MODEL>-<name>-<kind>`. UniFi Protect's adoption UI
   renders `<Manufacturer> <Model>`; the long form was hard to scan in
